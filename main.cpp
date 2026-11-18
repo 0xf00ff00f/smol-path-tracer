@@ -41,6 +41,8 @@ public:
 
     std::vector<PhysDevice> physDevices() const;
 
+    operator VkInstance() const { return m_instance; }
+
 private:
     void create();
 
@@ -86,11 +88,38 @@ public:
 
     PhysDevice physDevice() const { return m_physDevice; }
 
+    operator VkDevice() const { return m_device; }
+
 private:
     void create();
 
     PhysDevice m_physDevice;
     VkDevice m_device{ VK_NULL_HANDLE };
+};
+
+class Buffer
+{
+public:
+    explicit Buffer(const Device *device, VkDeviceSize size);
+    ~Buffer();
+
+    Buffer(const Buffer &) = delete;
+    Buffer &operator=(const Buffer &) = delete;
+
+    Buffer(Buffer &&);
+    Buffer &operator=(Buffer &&);
+
+    VkDeviceSize size() const { return m_size; }
+
+    operator VkBuffer() const { return m_buffer; }
+
+private:
+    void create();
+
+    const Device *m_device{ nullptr };
+    VkDeviceSize m_size{ };
+    VkBuffer m_buffer{ VK_NULL_HANDLE };
+    VkDeviceMemory m_memory{ VK_NULL_HANDLE };
 };
 
 Instance::Instance()
@@ -243,6 +272,84 @@ void Device::create()
     vkCheckedCall(vkCreateDevice, m_physDevice, &createInfo, nullptr, &m_device);
 }
 
+Buffer::Buffer(const Device *device, VkDeviceSize size)
+    : m_device{ device }
+    , m_size{ size }
+{
+    create();
+}
+
+Buffer::~Buffer()
+{
+    if (m_memory != VK_NULL_HANDLE)
+        vkFreeMemory(*m_device, m_memory, nullptr);
+
+    if (m_buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(*m_device, m_buffer, nullptr);
+}
+
+Buffer::Buffer(Buffer &&other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_size{ std::exchange(other.m_size, 0) }
+    , m_buffer{ std::exchange(other.m_buffer, VK_NULL_HANDLE) }
+    , m_memory{ std::exchange(other.m_memory, VK_NULL_HANDLE) }
+{
+}
+
+Buffer &Buffer::operator=(Buffer &&other)
+{
+    if (this != &other) {
+        if (m_memory != VK_NULL_HANDLE)
+            vkFreeMemory(*m_device, m_memory, nullptr);
+        if (m_buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(*m_device, m_buffer, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_size = std::exchange(other.m_size, 0);
+        m_buffer = std::exchange(other.m_buffer, VK_NULL_HANDLE);
+        m_memory = std::exchange(other.m_memory, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Buffer::create()
+{
+    VkBufferCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = m_size,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+    vkCheckedCall(vkCreateBuffer, *m_device, &createInfo, nullptr, &m_buffer);
+
+    VkMemoryRequirements memoryRequirements = { };
+    vkGetBufferMemoryRequirements(*m_device, m_buffer, &memoryRequirements);
+
+    const auto memoryTypeIndex = [this, memoryTypeBits = memoryRequirements.memoryTypeBits]() -> std::optional<uint32_t> {
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(m_device->physDevice(), &memoryProperties);
+        constexpr uint32_t kFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (memoryTypeBits & (1 << i)) {
+                const auto flags = memoryProperties.memoryTypes[i].propertyFlags;
+                if ((flags & kFlags) == kFlags) {
+                    return i;
+                }
+            }
+        }
+        return std::nullopt;
+    }();
+
+    if (memoryTypeIndex.has_value()) {
+        VkMemoryAllocateInfo allocateInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = memoryRequirements.size,
+            .memoryTypeIndex = *memoryTypeIndex
+        };
+        vkCheckedCall(vkAllocateMemory, *m_device, &allocateInfo, nullptr, &m_memory);
+        vkCheckedCall(vkBindBufferMemory, *m_device, m_buffer, m_memory, 0);
+    }
+}
+
 } // namespace v
 
 int main()
@@ -254,5 +361,6 @@ int main()
     }
     if (!physDevices.empty()) {
         v::Device device(physDevices.front());
+        v::Buffer buffer(&device, 2048);
     }
 }
