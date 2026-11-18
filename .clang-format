@@ -16,7 +16,8 @@ SpaceAfterTemplateKeyword: false
 AllowShortFunctionsOnASingleLine: Inline
 ConstructorInitializerAllOnOneLineOrOnePerLine: true
 AlwaysBreakTemplateDeclarations: true
-BreakBeforeBinaryOperators: None
+BreakBinaryOperations: OnePerLine
+BreakBeforeBinaryOperators: true
 
 SpaceBeforeCpp11BracedList: false
 BreakBeforeBraces: Custom
