@@ -173,6 +173,28 @@ private:
     VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
 };
 
+class Pipeline
+{
+public:
+    Pipeline() = default;
+
+    template<std::same_as<Buffer>... Buffers>
+    explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
+    ~Pipeline();
+
+    Pipeline(const Pipeline &) = delete;
+    Pipeline &operator=(const Pipeline &) = delete;
+
+    Pipeline(Pipeline &&);
+    Pipeline &operator=(Pipeline &&);
+
+private:
+    const Device *m_device{ nullptr };
+    VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
+    VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
+    VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
+};
+
 Instance::Instance()
 {
     create();
@@ -444,6 +466,88 @@ void Program::create()
     vkCheckedCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
 }
 
+template<std::same_as<Buffer>... Buffers>
+Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &...buffers)
+    : m_device{ device }
+{
+    // descriptor set layout
+
+    const auto bindings = []<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::array{
+            VkDescriptorSetLayoutBinding{
+                    .binding = Is,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT }...
+        };
+    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = bindings.size(),
+        .pBindings = bindings.data()
+    };
+
+    vkCheckedCall(vkCreateDescriptorSetLayout, *m_device, &descriptorSetLayoutCreateInfo, nullptr, &m_descriptorSetLayout);
+
+    // allocate descriptor set
+
+    VkDescriptorPoolSize descriptorPoolSize = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = sizeof...(Buffers)
+    };
+
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &descriptorPoolSize
+    };
+
+    vkCheckedCall(vkCreateDescriptorPool, *m_device, &descriptorPoolCreateInfo, nullptr, &m_descriptorPool);
+
+    VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = m_descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &m_descriptorSetLayout
+    };
+
+    vkCheckedCall(vkAllocateDescriptorSets, *m_device, &descriptorSetAllocateInfo, &m_descriptorSet);
+
+    // update descriptor set
+
+    const auto bufferInfos = std::array{
+        VkDescriptorBufferInfo{
+                .buffer = buffers,
+                .offset = 0,
+                .range = buffers.size() }...
+    };
+
+    const auto descriptorWrites = [this, &bufferInfos]<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::array{
+            VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = m_descriptorSet,
+                    .dstBinding = Is,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .pBufferInfo = &bufferInfos[Is] }...
+        };
+    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+
+    vkUpdateDescriptorSets(*m_device, descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+}
+
+Pipeline::~Pipeline()
+{
+    if (m_descriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
+
+    if (m_descriptorSetLayout != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+}
+
 } // namespace v
 
 int main()
@@ -455,7 +559,10 @@ int main()
     }
     if (!physDevices.empty()) {
         v::Device device(physDevices.front());
-        v::Buffer buffer(&device, 2048);
+        v::Buffer bufferA(&device, 2048);
+        v::Buffer bufferB(&device, 2048);
+        v::Buffer bufferC(&device, 2048);
         v::Program program(&device, "shader.spv");
+        v::Pipeline(&device, &program, bufferA, bufferB, bufferC);
     }
 }
