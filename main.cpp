@@ -1,11 +1,12 @@
-#include <optional>
 #include <vulkan/vulkan.h>
 
-#include <utility>
 #include <array>
+#include <memory>
+#include <optional>
 #include <print>
-#include <vector>
 #include <ranges>
+#include <utility>
+#include <vector>
 
 namespace v {
 
@@ -20,6 +21,26 @@ void vkCheckedCall(F &&f, Args &&...args)
         std::println(stderr, "Failed: {}", static_cast<std::underlying_type_t<VkResult>>(res));
         std::abort();
     }
+}
+
+std::vector<uint32_t> readFile(const std::string& path)
+{
+    std::unique_ptr<FILE, int(*)(FILE *)> fp{ fopen(path.c_str(), "rb"), &fclose };
+    if (fp == nullptr) {
+        std::println(stderr, "Failed to open {}", path);
+        return { };
+    }
+
+    fseek(fp.get(), 0, SEEK_END);
+    const auto size = ftell(fp.get());
+    fseek(fp.get(), 0, SEEK_SET);
+
+    const auto sizePadded = ((size + sizeof(uint32_t) - 1) / sizeof(uint32_t)) * sizeof(uint32_t);
+
+    std::vector<uint32_t> bytes(sizePadded, 0);
+    fread(bytes.data(), size, 1, fp.get());
+
+    return bytes;
 }
 
 } // namespace
@@ -77,6 +98,7 @@ private:
 class Device
 {
 public:
+    Device() = default;
     explicit Device(PhysDevice physDevice);
     ~Device();
 
@@ -100,6 +122,7 @@ private:
 class Buffer
 {
 public:
+    Buffer() = default;
     explicit Buffer(const Device *device, VkDeviceSize size);
     ~Buffer();
 
@@ -120,6 +143,34 @@ private:
     VkDeviceSize m_size{ };
     VkBuffer m_buffer{ VK_NULL_HANDLE };
     VkDeviceMemory m_memory{ VK_NULL_HANDLE };
+};
+
+class Program
+{
+public:
+    Program() = default;
+    explicit Program(const Device *device, const std::string_view path);
+    ~Program();
+
+    Program(const Program &) = delete;
+    Program &operator=(const Program &) = delete;
+
+    Program(Program &&);
+    Program &operator=(Program &&);
+
+    std::string_view path() const { return m_path; }
+
+    template<std::convertible_to<VkBuffer>... Buffers>
+    void bind(Buffers&&... buffers);
+
+    void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
+
+private:
+    void create();
+
+    const Device *m_device{ nullptr };
+    std::string m_path;
+    VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
 };
 
 Instance::Instance()
@@ -350,6 +401,49 @@ void Buffer::create()
     }
 }
 
+Program::Program(const Device *device, const std::string_view path)
+    : m_device{ device }
+    , m_path{ path }
+{
+    create();
+}
+
+Program::~Program()
+{
+    if (m_shaderModule != VK_NULL_HANDLE)
+        vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
+}
+
+Program::Program(Program&& other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_path{ std::exchange(other.m_path, {}) }
+    , m_shaderModule{ std::exchange(other.m_shaderModule, VK_NULL_HANDLE) }
+{
+}
+
+Program& Program::operator=(Program&& other)
+{
+    if (this != &other) {
+        if (m_shaderModule != VK_NULL_HANDLE)
+            vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_path = std::exchange(other.m_path, {});
+        m_shaderModule = std::exchange(other.m_shaderModule, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Program::create()
+{
+    const std::vector<uint32_t> code = readFile(m_path.c_str());
+    VkShaderModuleCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = static_cast<uint32_t>(code.size()),
+        .pCode = code.data()
+    };
+    vkCheckedCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
+}
+
 } // namespace v
 
 int main()
@@ -362,5 +456,6 @@ int main()
     if (!physDevices.empty()) {
         v::Device device(physDevices.front());
         v::Buffer buffer(&device, 2048);
+        v::Program program(&device, "shader.spv");
     }
 }
