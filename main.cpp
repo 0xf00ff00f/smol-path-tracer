@@ -7,6 +7,26 @@
 #include <ranges>
 #include <utility>
 #include <vector>
+#include <experimental/meta>
+
+template<typename T>
+    requires std::is_enum_v<T>
+struct std::formatter<T> {
+    constexpr auto parse(std::format_parse_context &ctx)
+    {
+        return ctx.begin();
+    }
+
+    auto format(T value, std::format_context &ctx) const
+    {
+        template for (constexpr auto e : std::define_static_array(std::meta::enumerators_of(^^T)))
+        {
+            if (value == [:e:])
+                return std::format_to(ctx.out(), "{}", std::meta::identifier_of(e));
+        }
+        return std::format_to(ctx.out(), "{}", static_cast<std::underlying_type_t<T>>(value));
+    }
+};
 
 namespace v {
 
@@ -18,7 +38,7 @@ void vkCheckedCall(F &&f, Args &&...args)
 {
     const VkResult res = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
     if (res != VK_SUCCESS) {
-        std::println(stderr, "Failed: {}", static_cast<std::underlying_type_t<VkResult>>(res));
+        std::println(stderr, "Failed: {}", res);
         std::abort();
     }
 }
@@ -317,6 +337,8 @@ Device &Device::operator=(Device &&other)
 void Device::create()
 {
     std::optional<uint32_t> queueFamilyIndex = m_physDevice.computeQueueFamilyIndex();
+#if 0
+    // disabled, libc++ in clang-p2996 doesn't have std::optional range support :(
     const std::vector<VkDeviceQueueCreateInfo> queueCreateInfos = queueFamilyIndex | std::views::transform([](uint32_t queueFamilyIndex) {
                                                                       static float queuePriorities = 1.0f;
                                                                       return VkDeviceQueueCreateInfo{
@@ -327,6 +349,17 @@ void Device::create()
                                                                       };
                                                                   })
             | std::ranges::to<std::vector>();
+#else
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    if (queueFamilyIndex.has_value()) {
+        static float queuePriorities = 1.0f;
+        queueCreateInfos.push_back(VkDeviceQueueCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = *queueFamilyIndex,
+                .queueCount = 1,
+                .pQueuePriorities = &queuePriorities });
+    }
+#endif
 
     VkPhysicalDeviceFeatures deviceFeatures = { };
 
@@ -550,7 +583,7 @@ int main()
     v::Instance instance;
     const auto physDevices = instance.physDevices();
     for (const auto &device : physDevices) {
-        std::println("name={}, type={}", device.name(), static_cast<int>(device.type()));
+        std::println("name={}, type={}", device.name(), device.type());
     }
     if (!physDevices.empty()) {
         v::Device device(physDevices.front());
