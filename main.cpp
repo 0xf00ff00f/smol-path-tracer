@@ -180,6 +180,8 @@ public:
 
     std::string_view path() const { return m_path; }
 
+    operator VkShaderModule() const { return m_shaderModule; }
+
 private:
     void create();
 
@@ -208,6 +210,8 @@ private:
     VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
     VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
+    VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };
+    VkPipeline m_pipeline{ VK_NULL_HANDLE };
 };
 
 Instance::Instance()
@@ -498,7 +502,7 @@ template<std::same_as<Buffer>... Buffers>
 Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &...buffers)
     : m_device{ device }
 {
-    // descriptor set layout
+    // create descriptor set layout
 
     const auto bindings = []<std::size_t... Is>(std::index_sequence<Is...>) {
         return std::array{
@@ -565,10 +569,39 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
     }(std::make_index_sequence<sizeof...(Buffers)>{ });
 
     vkUpdateDescriptorSets(*m_device, descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+
+    // create pipeline layout
+
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &m_descriptorSetLayout
+    };
+    vkCheckedCall(vkCreatePipelineLayout, *m_device, &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout);
+
+    // create pipeline
+
+    VkComputePipelineCreateInfo pipelineCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = *program,
+                .pName = "main" },
+        .layout = m_pipelineLayout
+    };
+
+    vkCheckedCall(vkCreateComputePipelines, *device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
 }
 
 Pipeline::~Pipeline()
 {
+    if (m_pipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(*m_device, m_pipeline, nullptr);
+
+    if (m_pipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
+
     if (m_descriptorPool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
 
