@@ -160,11 +160,6 @@ public:
 
     std::string_view path() const { return m_path; }
 
-    template<std::convertible_to<VkBuffer>... Buffers>
-    void bind(Buffers&&... buffers);
-
-    void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
-
 private:
     void create();
 
