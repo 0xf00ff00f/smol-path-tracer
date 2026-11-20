@@ -173,7 +173,8 @@ public:
 
     VkDeviceSize size() const { return m_size; }
 
-    void *map(VkDeviceSize offset, VkDeviceSize size) const;
+    std::span<std::byte> map(VkDeviceSize offset, VkDeviceSize size) const;
+    std::span<std::byte> map() const;
     void unmap() const;
 
     operator VkBuffer() const { return m_buffer; }
@@ -535,11 +536,16 @@ void Buffer::create()
     }
 }
 
-void *Buffer::map(VkDeviceSize offset, VkDeviceSize size) const
+std::span<std::byte> Buffer::map(VkDeviceSize offset, VkDeviceSize size) const
 {
     void *mappedMemory;
     checkedVkCall(vkMapMemory, *m_device, m_memory, offset, size, 0, &mappedMemory);
-    return mappedMemory;
+    return { static_cast<std::byte *>(mappedMemory), size };
+}
+
+std::span<std::byte> Buffer::map() const
+{
+    return map(0, m_size);
 }
 
 void Buffer::unmap() const
