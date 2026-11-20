@@ -43,9 +43,9 @@ void vkCheckedCall(F &&f, Args &&...args)
     }
 }
 
-std::vector<uint32_t> readFile(const std::string& path)
+std::vector<uint32_t> readFile(const std::string &path)
 {
-    std::unique_ptr<FILE, int(*)(FILE *)> fp{ fopen(path.c_str(), "rb"), &fclose };
+    std::unique_ptr<FILE, int (*)(FILE *)> fp{ fopen(path.c_str(), "rb"), &fclose };
     if (fp == nullptr) {
         std::println(stderr, "Failed to open {}", path);
         return { };
@@ -464,20 +464,20 @@ Program::~Program()
         vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
 }
 
-Program::Program(Program&& other)
+Program::Program(Program &&other)
     : m_device{ std::exchange(other.m_device, nullptr) }
-    , m_path{ std::exchange(other.m_path, {}) }
+    , m_path{ std::exchange(other.m_path, { }) }
     , m_shaderModule{ std::exchange(other.m_shaderModule, VK_NULL_HANDLE) }
 {
 }
 
-Program& Program::operator=(Program&& other)
+Program &Program::operator=(Program &&other)
 {
     if (this != &other) {
         if (m_shaderModule != VK_NULL_HANDLE)
             vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
         m_device = std::exchange(other.m_device, nullptr);
-        m_path = std::exchange(other.m_path, {});
+        m_path = std::exchange(other.m_path, { });
         m_shaderModule = std::exchange(other.m_shaderModule, VK_NULL_HANDLE);
     }
     return *this;
