@@ -13,16 +13,16 @@ int main()
     if (physDevices.empty())
         return 1;
 
-    gpu::Device device(physDevices.front());
+    gpu::Device device = physDevices.front().createDevice();
 
     constexpr auto kSize = 50;
-    gpu::Buffer buffer(&device, kSize * sizeof(float));
+    gpu::Buffer buffer = device.createBuffer(kSize * sizeof(float));
 
-    gpu::Program program(&device, "shader.spv");
-    gpu::Pipeline pipeline(&device, &program, buffer);
+    gpu::Program program = device.createProgram("shader.spv");
+    gpu::Pipeline pipeline = program.createPipeline(buffer);
 
     constexpr auto kWorkgroupSize = 32;
-    pipeline.dispatch((kSize + kWorkgroupSize - 1) / kWorkgroupSize, 1, 1);
+    pipeline.dispatch((kSize + kWorkgroupSize - 1) / kWorkgroupSize);
 
     const auto *addr = reinterpret_cast<float *>(buffer.map(0, buffer.size()));
     for (std::size_t i = 0; i < kSize; ++i) {

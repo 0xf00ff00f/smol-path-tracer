@@ -71,6 +71,10 @@ std::vector<uint32_t> readFile(const std::string &path)
 export namespace gpu {
 
 class PhysDevice;
+class Device;
+class Buffer;
+class Program;
+class Pipeline;
 
 class Instance
 {
@@ -115,6 +119,8 @@ public:
 
     std::optional<uint32_t> computeQueueFamilyIndex() const;
 
+    Device createDevice() const;
+
 private:
     VkPhysicalDevice m_physDevice{ VK_NULL_HANDLE };
 };
@@ -123,7 +129,6 @@ class Device
 {
 public:
     Device() = default;
-    explicit Device(PhysDevice physDevice);
     ~Device();
 
     Device(const Device &) = delete;
@@ -136,9 +141,13 @@ public:
     VkQueue queue() const { return m_queue; }
     VkCommandBuffer commandBuffer() const { return m_commandBuffer; }
 
+    Buffer createBuffer(VkDeviceSize size) const;
+    Program createProgram(std::string_view path) const;
+
     operator VkDevice() const { return m_device; }
 
 private:
+    explicit Device(PhysDevice physDevice);
     void create();
 
     PhysDevice m_physDevice;
@@ -146,13 +155,14 @@ private:
     VkQueue m_queue{ VK_NULL_HANDLE };
     VkCommandPool m_commandPool{ VK_NULL_HANDLE };
     VkCommandBuffer m_commandBuffer{ VK_NULL_HANDLE };
+
+    friend class PhysDevice;
 };
 
 class Buffer
 {
 public:
     Buffer() = default;
-    explicit Buffer(const Device *device, VkDeviceSize size);
     ~Buffer();
 
     Buffer(const Buffer &) = delete;
@@ -169,19 +179,21 @@ public:
     operator VkBuffer() const { return m_buffer; }
 
 private:
+    explicit Buffer(const Device *device, VkDeviceSize size);
     void create();
 
     const Device *m_device{ nullptr };
     VkDeviceSize m_size{ };
     VkBuffer m_buffer{ VK_NULL_HANDLE };
     VkDeviceMemory m_memory{ VK_NULL_HANDLE };
+
+    friend class Device;
 };
 
 class Program
 {
 public:
     Program() = default;
-    explicit Program(const Device *device, const std::string_view path);
     ~Program();
 
     Program(const Program &) = delete;
@@ -192,14 +204,20 @@ public:
 
     std::string_view path() const { return m_path; }
 
+    template<std::same_as<Buffer>... Buffers>
+    Pipeline createPipeline(const Buffers &...buffers) const;
+
     operator VkShaderModule() const { return m_shaderModule; }
 
 private:
+    explicit Program(const Device *device, std::string_view path);
     void create();
 
     const Device *m_device{ nullptr };
     std::string m_path;
     VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
+
+    friend class Device;
 };
 
 class Pipeline
@@ -207,8 +225,6 @@ class Pipeline
 public:
     Pipeline() = default;
 
-    template<std::same_as<Buffer>... Buffers>
-    explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
     ~Pipeline();
 
     Pipeline(const Pipeline &) = delete;
@@ -217,15 +233,20 @@ public:
     Pipeline(Pipeline &&);
     Pipeline &operator=(Pipeline &&);
 
-    void dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const;
+    void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1) const;
 
 private:
+    template<std::same_as<Buffer>... Buffers>
+    explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
+
     const Device *m_device{ nullptr };
     VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
     VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
     VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };
     VkPipeline m_pipeline{ VK_NULL_HANDLE };
+
+    friend class Program;
 };
 
 Instance::Instance()
@@ -321,6 +342,11 @@ std::optional<uint32_t> PhysDevice::computeQueueFamilyIndex() const
         return std::nullopt;
 
     return std::distance(queueFamilies.begin(), it);
+}
+
+Device PhysDevice::createDevice() const
+{
+    return Device{ *this };
 }
 
 Device::Device(PhysDevice physDevice)
@@ -421,6 +447,16 @@ void Device::create()
     }
 }
 
+Buffer Device::createBuffer(VkDeviceSize size) const
+{
+    return Buffer{ this, size };
+}
+
+Program Device::createProgram(std::string_view path) const
+{
+    return Program{ this, path };
+}
+
 Buffer::Buffer(const Device *device, VkDeviceSize size)
     : m_device{ device }
     , m_size{ size }
@@ -511,7 +547,7 @@ void Buffer::unmap() const
     vkUnmapMemory(*m_device, m_memory);
 }
 
-Program::Program(const Device *device, const std::string_view path)
+Program::Program(const Device *device, std::string_view path)
     : m_device{ device }
     , m_path{ path }
 {
@@ -552,6 +588,12 @@ void Program::create()
         .pCode = code.data()
     };
     checkedVkCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
+}
+
+template<std::same_as<Buffer>... Buffers>
+Pipeline Program::createPipeline(const Buffers &...buffers) const
+{
+    return Pipeline{ m_device, this, buffers... };
 }
 
 template<std::same_as<Buffer>... Buffers>
