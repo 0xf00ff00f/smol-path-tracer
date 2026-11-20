@@ -1,0 +1,735 @@
+module;
+
+#include <vulkan/vulkan.h>
+
+#include <array>
+#include <experimental/meta>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <print>
+#include <ranges>
+#include <utility>
+#include <vector>
+
+export module gpu;
+
+template<typename T>
+    requires std::is_enum_v<T>
+struct std::formatter<T> {
+    constexpr auto parse(std::format_parse_context &ctx)
+    {
+        return ctx.begin();
+    }
+
+    auto format(T value, std::format_context &ctx) const
+    {
+        template for (constexpr auto e : std::define_static_array(std::meta::enumerators_of(^^T)))
+        {
+            if (value == [:e:])
+                return std::format_to(ctx.out(), "{}", std::meta::identifier_of(e));
+        }
+        return std::format_to(ctx.out(), "{}", static_cast<std::underlying_type_t<T>>(value));
+    }
+};
+
+namespace {
+
+template<typename F, typename... Args>
+    requires std::is_invocable_r_v<VkResult, F, Args...>
+void checkedVkCall(F &&f, Args &&...args)
+{
+    const VkResult res = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
+    if (res != VK_SUCCESS) {
+        std::println(stderr, "Failed: {}", res);
+        std::abort();
+    }
+}
+
+std::vector<uint32_t> readFile(const std::string &path)
+{
+    std::unique_ptr<FILE, int (*)(FILE *)> fp{ fopen(path.c_str(), "rb"), &fclose };
+    if (fp == nullptr) {
+        std::println(stderr, "Failed to open {}", path);
+        return { };
+    }
+
+    fseek(fp.get(), 0, SEEK_END);
+    const auto size = ftell(fp.get());
+    fseek(fp.get(), 0, SEEK_SET);
+
+    const auto sizePadded = ((size + sizeof(uint32_t) - 1) / sizeof(uint32_t)) * sizeof(uint32_t);
+
+    std::vector<uint32_t> bytes(sizePadded, 0);
+    fread(bytes.data(), size, 1, fp.get());
+
+    return bytes;
+}
+
+} // namespace
+
+export namespace gpu {
+
+class PhysDevice;
+
+class Instance
+{
+public:
+    explicit Instance();
+    ~Instance();
+
+    Instance(const Instance &) = delete;
+    Instance &operator=(Instance &) = delete;
+
+    Instance(Instance &&other);
+    Instance &operator=(Instance &&other);
+
+    std::vector<PhysDevice> physDevices() const;
+
+    operator VkInstance() const { return m_instance; }
+
+private:
+    void create();
+
+    VkInstance m_instance{ VK_NULL_HANDLE };
+};
+
+class PhysDevice
+{
+public:
+    enum class Type {
+        Other = VkPhysicalDeviceType::VK_PHYSICAL_DEVICE_TYPE_OTHER,
+        IntegratedGPU = VkPhysicalDeviceType::VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU,
+        DiscreteGPU = VkPhysicalDeviceType::VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU,
+        VirtualGPU = VkPhysicalDeviceType::VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU,
+        CPU = VkPhysicalDeviceType::VK_PHYSICAL_DEVICE_TYPE_CPU,
+    };
+
+    PhysDevice() = default;
+    explicit PhysDevice(VkPhysicalDevice physDevice);
+
+    operator VkPhysicalDevice() const { return m_physDevice; }
+
+    Type type() const;
+    std::string name() const;
+
+    std::optional<uint32_t> computeQueueFamilyIndex() const;
+
+private:
+    VkPhysicalDevice m_physDevice{ VK_NULL_HANDLE };
+};
+
+class Device
+{
+public:
+    Device() = default;
+    explicit Device(PhysDevice physDevice);
+    ~Device();
+
+    Device(const Device &) = delete;
+    Device &operator=(const Device &) = delete;
+
+    Device(Device &&other);
+    Device &operator=(Device &&other);
+
+    PhysDevice physDevice() const { return m_physDevice; }
+    VkQueue queue() const { return m_queue; }
+    VkCommandBuffer commandBuffer() const { return m_commandBuffer; }
+
+    operator VkDevice() const { return m_device; }
+
+private:
+    void create();
+
+    PhysDevice m_physDevice;
+    VkDevice m_device{ VK_NULL_HANDLE };
+    VkQueue m_queue{ VK_NULL_HANDLE };
+    VkCommandPool m_commandPool{ VK_NULL_HANDLE };
+    VkCommandBuffer m_commandBuffer{ VK_NULL_HANDLE };
+};
+
+class Buffer
+{
+public:
+    Buffer() = default;
+    explicit Buffer(const Device *device, VkDeviceSize size);
+    ~Buffer();
+
+    Buffer(const Buffer &) = delete;
+    Buffer &operator=(const Buffer &) = delete;
+
+    Buffer(Buffer &&);
+    Buffer &operator=(Buffer &&);
+
+    VkDeviceSize size() const { return m_size; }
+
+    void *map(VkDeviceSize offset, VkDeviceSize size) const;
+    void unmap() const;
+
+    operator VkBuffer() const { return m_buffer; }
+
+private:
+    void create();
+
+    const Device *m_device{ nullptr };
+    VkDeviceSize m_size{ };
+    VkBuffer m_buffer{ VK_NULL_HANDLE };
+    VkDeviceMemory m_memory{ VK_NULL_HANDLE };
+};
+
+class Program
+{
+public:
+    Program() = default;
+    explicit Program(const Device *device, const std::string_view path);
+    ~Program();
+
+    Program(const Program &) = delete;
+    Program &operator=(const Program &) = delete;
+
+    Program(Program &&);
+    Program &operator=(Program &&);
+
+    std::string_view path() const { return m_path; }
+
+    operator VkShaderModule() const { return m_shaderModule; }
+
+private:
+    void create();
+
+    const Device *m_device{ nullptr };
+    std::string m_path;
+    VkShaderModule m_shaderModule{ VK_NULL_HANDLE };
+};
+
+class Pipeline
+{
+public:
+    Pipeline() = default;
+
+    template<std::same_as<Buffer>... Buffers>
+    explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
+    ~Pipeline();
+
+    Pipeline(const Pipeline &) = delete;
+    Pipeline &operator=(const Pipeline &) = delete;
+
+    Pipeline(Pipeline &&);
+    Pipeline &operator=(Pipeline &&);
+
+    void dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const;
+
+private:
+    const Device *m_device{ nullptr };
+    VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
+    VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
+    VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
+    VkPipelineLayout m_pipelineLayout{ VK_NULL_HANDLE };
+    VkPipeline m_pipeline{ VK_NULL_HANDLE };
+};
+
+Instance::Instance()
+{
+    create();
+}
+
+Instance::~Instance()
+{
+    if (m_instance != VK_NULL_HANDLE)
+        vkDestroyInstance(m_instance, nullptr);
+}
+
+Instance::Instance(Instance &&other)
+    : m_instance{ std::exchange(other.m_instance, VK_NULL_HANDLE) }
+{
+}
+
+Instance &Instance::operator=(Instance &&other)
+{
+    if (this != &other) {
+        if (m_instance != VK_NULL_HANDLE)
+            vkDestroyInstance(m_instance, nullptr);
+        m_instance = std::exchange(other.m_instance, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Instance::create()
+{
+    constexpr std::array layers = { "VK_LAYER_KHRONOS_validation" };
+
+    VkApplicationInfo applicationInfo = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = "Compute shader test",
+        .applicationVersion = 0,
+        .apiVersion = VK_API_VERSION_1_0
+    };
+
+    VkInstanceCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .flags = 0,
+        .pApplicationInfo = &applicationInfo,
+        .enabledLayerCount = layers.size(),
+        .ppEnabledLayerNames = layers.data(),
+    };
+
+    checkedVkCall(vkCreateInstance, &createInfo, nullptr, &m_instance);
+}
+
+std::vector<PhysDevice> Instance::physDevices() const
+{
+    uint32_t count;
+    vkEnumeratePhysicalDevices(m_instance, &count, nullptr);
+    std::vector<VkPhysicalDevice> physDevices(count);
+    vkEnumeratePhysicalDevices(m_instance, &count, physDevices.data());
+
+    return physDevices
+            | std::views::transform([](const VkPhysicalDevice physDevice) { return PhysDevice{ physDevice }; })
+            | std::ranges::to<std::vector>();
+}
+
+PhysDevice::PhysDevice(VkPhysicalDevice physDevice)
+    : m_physDevice{ physDevice }
+{
+}
+
+PhysDevice::Type PhysDevice::type() const
+{
+    VkPhysicalDeviceProperties properties = { };
+    vkGetPhysicalDeviceProperties(m_physDevice, &properties);
+    return static_cast<PhysDevice::Type>(properties.deviceType);
+}
+
+std::string PhysDevice::name() const
+{
+    VkPhysicalDeviceProperties properties = { };
+    vkGetPhysicalDeviceProperties(m_physDevice, &properties);
+    return properties.deviceName;
+}
+
+std::optional<uint32_t> PhysDevice::computeQueueFamilyIndex() const
+{
+    uint32_t count;
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physDevice, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> queueFamilies(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(m_physDevice, &count, queueFamilies.data());
+
+    auto it = std::ranges::find_if(queueFamilies, [](const VkQueueFamilyProperties &props) {
+        return props.queueCount > 0 && (props.queueFlags & VK_QUEUE_COMPUTE_BIT);
+    });
+    if (it == queueFamilies.end())
+        return std::nullopt;
+
+    return std::distance(queueFamilies.begin(), it);
+}
+
+Device::Device(PhysDevice physDevice)
+    : m_physDevice{ physDevice }
+{
+    create();
+}
+
+Device::~Device()
+{
+    if (m_commandPool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+
+    if (m_device != VK_NULL_HANDLE)
+        vkDestroyDevice(m_device, nullptr);
+}
+
+Device::Device(Device &&other)
+    : m_physDevice{ std::exchange(other.m_physDevice, { }) }
+    , m_device{ std::exchange(other.m_device, VK_NULL_HANDLE) }
+    , m_queue{ std::exchange(other.m_queue, VK_NULL_HANDLE) }
+    , m_commandPool{ std::exchange(other.m_commandPool, VK_NULL_HANDLE) }
+    , m_commandBuffer{ std::exchange(other.m_commandBuffer, VK_NULL_HANDLE) }
+{
+}
+
+Device &Device::operator=(Device &&other)
+{
+    if (this != &other) {
+        if (m_commandPool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+        if (m_device != VK_NULL_HANDLE)
+            vkDestroyDevice(m_device, nullptr);
+        m_physDevice = std::exchange(other.m_physDevice, { });
+        m_device = std::exchange(other.m_device, VK_NULL_HANDLE);
+        m_queue = std::exchange(other.m_queue, VK_NULL_HANDLE);
+        m_commandPool = std::exchange(other.m_commandPool, VK_NULL_HANDLE);
+        m_commandBuffer = std::exchange(other.m_commandBuffer, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Device::create()
+{
+    std::optional<uint32_t> queueFamilyIndex = m_physDevice.computeQueueFamilyIndex();
+#if 0
+    // disabled, libc++ in clang-p2996 doesn't have std::optional range support :(
+    const std::vector<VkDeviceQueueCreateInfo> queueCreateInfos = queueFamilyIndex | std::views::transform([](uint32_t queueFamilyIndex) {
+                                                                      static float queuePriorities = 1.0f;
+                                                                      return VkDeviceQueueCreateInfo{
+                                                                          .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                                                                          .queueFamilyIndex = queueFamilyIndex,
+                                                                          .queueCount = 1,
+                                                                          .pQueuePriorities = &queuePriorities
+                                                                      };
+                                                                  })
+            | std::ranges::to<std::vector>();
+#else
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    if (queueFamilyIndex.has_value()) {
+        static float queuePriorities = 1.0f;
+        queueCreateInfos.push_back(VkDeviceQueueCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = *queueFamilyIndex,
+                .queueCount = 1,
+                .pQueuePriorities = &queuePriorities });
+    }
+#endif
+
+    VkPhysicalDeviceFeatures deviceFeatures = { };
+
+    VkDeviceCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size()),
+        .pQueueCreateInfos = queueCreateInfos.data(),
+        .pEnabledFeatures = &deviceFeatures
+    };
+
+    checkedVkCall(vkCreateDevice, m_physDevice, &createInfo, nullptr, &m_device);
+
+    if (queueFamilyIndex.has_value()) {
+        vkGetDeviceQueue(m_device, *queueFamilyIndex, 0, &m_queue);
+
+        VkCommandPoolCreateInfo commandPoolCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = 0,
+            .queueFamilyIndex = *queueFamilyIndex
+        };
+        checkedVkCall(vkCreateCommandPool, m_device, &commandPoolCreateInfo, nullptr, &m_commandPool);
+
+        VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = m_commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        checkedVkCall(vkAllocateCommandBuffers, m_device, &commandBufferAllocateInfo, &m_commandBuffer);
+    }
+}
+
+Buffer::Buffer(const Device *device, VkDeviceSize size)
+    : m_device{ device }
+    , m_size{ size }
+{
+    create();
+}
+
+Buffer::~Buffer()
+{
+    if (m_memory != VK_NULL_HANDLE)
+        vkFreeMemory(*m_device, m_memory, nullptr);
+
+    if (m_buffer != VK_NULL_HANDLE)
+        vkDestroyBuffer(*m_device, m_buffer, nullptr);
+}
+
+Buffer::Buffer(Buffer &&other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_size{ std::exchange(other.m_size, 0) }
+    , m_buffer{ std::exchange(other.m_buffer, VK_NULL_HANDLE) }
+    , m_memory{ std::exchange(other.m_memory, VK_NULL_HANDLE) }
+{
+}
+
+Buffer &Buffer::operator=(Buffer &&other)
+{
+    if (this != &other) {
+        if (m_memory != VK_NULL_HANDLE)
+            vkFreeMemory(*m_device, m_memory, nullptr);
+        if (m_buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(*m_device, m_buffer, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_size = std::exchange(other.m_size, 0);
+        m_buffer = std::exchange(other.m_buffer, VK_NULL_HANDLE);
+        m_memory = std::exchange(other.m_memory, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Buffer::create()
+{
+    VkBufferCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = m_size,
+        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE
+    };
+    checkedVkCall(vkCreateBuffer, *m_device, &createInfo, nullptr, &m_buffer);
+
+    VkMemoryRequirements memoryRequirements = { };
+    vkGetBufferMemoryRequirements(*m_device, m_buffer, &memoryRequirements);
+
+    const auto memoryTypeIndex = [this, memoryTypeBits = memoryRequirements.memoryTypeBits]() -> std::optional<uint32_t> {
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(m_device->physDevice(), &memoryProperties);
+        constexpr uint32_t kFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
+            if (memoryTypeBits & (1 << i)) {
+                const auto flags = memoryProperties.memoryTypes[i].propertyFlags;
+                if ((flags & kFlags) == kFlags) {
+                    return i;
+                }
+            }
+        }
+        return std::nullopt;
+    }();
+
+    if (memoryTypeIndex.has_value()) {
+        VkMemoryAllocateInfo allocateInfo = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = memoryRequirements.size,
+            .memoryTypeIndex = *memoryTypeIndex
+        };
+        checkedVkCall(vkAllocateMemory, *m_device, &allocateInfo, nullptr, &m_memory);
+        checkedVkCall(vkBindBufferMemory, *m_device, m_buffer, m_memory, 0);
+    }
+}
+
+void *Buffer::map(VkDeviceSize offset, VkDeviceSize size) const
+{
+    void *mappedMemory;
+    checkedVkCall(vkMapMemory, *m_device, m_memory, offset, size, 0, &mappedMemory);
+    return mappedMemory;
+}
+
+void Buffer::unmap() const
+{
+    vkUnmapMemory(*m_device, m_memory);
+}
+
+Program::Program(const Device *device, const std::string_view path)
+    : m_device{ device }
+    , m_path{ path }
+{
+    create();
+}
+
+Program::~Program()
+{
+    if (m_shaderModule != VK_NULL_HANDLE)
+        vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
+}
+
+Program::Program(Program &&other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_path{ std::exchange(other.m_path, { }) }
+    , m_shaderModule{ std::exchange(other.m_shaderModule, VK_NULL_HANDLE) }
+{
+}
+
+Program &Program::operator=(Program &&other)
+{
+    if (this != &other) {
+        if (m_shaderModule != VK_NULL_HANDLE)
+            vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_path = std::exchange(other.m_path, { });
+        m_shaderModule = std::exchange(other.m_shaderModule, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Program::create()
+{
+    const std::vector<uint32_t> code = readFile(m_path.c_str());
+    VkShaderModuleCreateInfo createInfo = {
+        .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = static_cast<uint32_t>(code.size()),
+        .pCode = code.data()
+    };
+    checkedVkCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
+}
+
+template<std::same_as<Buffer>... Buffers>
+Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &...buffers)
+    : m_device{ device }
+{
+    // create descriptor set layout
+
+    const auto bindings = []<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::array{
+            VkDescriptorSetLayoutBinding{
+                    .binding = Is,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .descriptorCount = 1,
+                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT }...
+        };
+    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+
+    VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = bindings.size(),
+        .pBindings = bindings.data()
+    };
+
+    checkedVkCall(vkCreateDescriptorSetLayout, *m_device, &descriptorSetLayoutCreateInfo, nullptr, &m_descriptorSetLayout);
+
+    // allocate descriptor set
+
+    VkDescriptorPoolSize descriptorPoolSize = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = sizeof...(Buffers)
+    };
+
+    VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .maxSets = 1,
+        .poolSizeCount = 1,
+        .pPoolSizes = &descriptorPoolSize
+    };
+
+    checkedVkCall(vkCreateDescriptorPool, *m_device, &descriptorPoolCreateInfo, nullptr, &m_descriptorPool);
+
+    VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = m_descriptorPool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &m_descriptorSetLayout
+    };
+
+    checkedVkCall(vkAllocateDescriptorSets, *m_device, &descriptorSetAllocateInfo, &m_descriptorSet);
+
+    // update descriptor set
+
+    const auto bufferInfos = std::array{
+        VkDescriptorBufferInfo{
+                .buffer = buffers,
+                .offset = 0,
+                .range = buffers.size() }...
+    };
+
+    const auto descriptorWrites = [this, &bufferInfos]<std::size_t... Is>(std::index_sequence<Is...>) {
+        return std::array{
+            VkWriteDescriptorSet{
+                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                    .dstSet = m_descriptorSet,
+                    .dstBinding = Is,
+                    .descriptorCount = 1,
+                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                    .pBufferInfo = &bufferInfos[Is] }...
+        };
+    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+
+    vkUpdateDescriptorSets(*m_device, descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
+
+    // create pipeline layout
+
+    VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &m_descriptorSetLayout
+    };
+    checkedVkCall(vkCreatePipelineLayout, *m_device, &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout);
+
+    // create pipeline
+
+    VkComputePipelineCreateInfo pipelineCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+        .stage = VkPipelineShaderStageCreateInfo{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                .module = *program,
+                .pName = "main" },
+        .layout = m_pipelineLayout
+    };
+
+    checkedVkCall(vkCreateComputePipelines, *device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
+}
+
+Pipeline::~Pipeline()
+{
+    if (m_pipeline != VK_NULL_HANDLE)
+        vkDestroyPipeline(*m_device, m_pipeline, nullptr);
+    if (m_pipelineLayout != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
+    if (m_descriptorPool != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
+    if (m_descriptorSetLayout != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+}
+
+Pipeline::Pipeline(Pipeline &&other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_descriptorSetLayout{ std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE) }
+    , m_descriptorPool{ std::exchange(other.m_descriptorPool, VK_NULL_HANDLE) }
+    , m_descriptorSet{ std::exchange(other.m_descriptorSet, VK_NULL_HANDLE) }
+    , m_pipelineLayout{ std::exchange(other.m_pipelineLayout, VK_NULL_HANDLE) }
+    , m_pipeline{ std::exchange(other.m_pipeline, VK_NULL_HANDLE) }
+{
+}
+
+Pipeline &Pipeline::operator=(Pipeline &&other)
+{
+    if (this != &other) {
+        if (m_pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(*m_device, m_pipeline, nullptr);
+        if (m_pipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
+        if (m_descriptorPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
+        if (m_descriptorSetLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_descriptorSetLayout = std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE);
+        m_descriptorPool = std::exchange(other.m_descriptorPool, VK_NULL_HANDLE);
+        m_descriptorSet = std::exchange(other.m_descriptorSet, VK_NULL_HANDLE);
+        m_pipelineLayout = std::exchange(other.m_pipelineLayout, VK_NULL_HANDLE);
+        m_pipeline = std::exchange(other.m_pipeline, VK_NULL_HANDLE);
+    }
+    return *this;
+}
+
+void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const
+{
+    const auto commandBuffer = m_device->commandBuffer();
+
+    // record command buffer
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    checkedVkCall(vkBeginCommandBuffer, commandBuffer, &beginInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
+
+    checkedVkCall(vkEndCommandBuffer, commandBuffer);
+
+    // submit
+
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandBuffer
+    };
+
+    VkFence fence;
+    VkFenceCreateInfo fenceCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = 0
+    };
+    checkedVkCall(vkCreateFence, *m_device, &fenceCreateInfo, nullptr, &fence);
+
+    checkedVkCall(vkQueueSubmit, m_device->queue(), 1, &submitInfo, fence);
+    checkedVkCall(vkWaitForFences, *m_device, 1, &fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
+
+    vkDestroyFence(*m_device, fence, nullptr);
+}
+
+} // namespace gpu
