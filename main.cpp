@@ -1,13 +1,14 @@
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <experimental/meta>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <print>
 #include <ranges>
 #include <utility>
 #include <vector>
-#include <experimental/meta>
 
 template<typename T>
     requires std::is_enum_v<T>
@@ -34,7 +35,7 @@ namespace {
 
 template<typename F, typename... Args>
     requires std::is_invocable_r_v<VkResult, F, Args...>
-void vkCheckedCall(F &&f, Args &&...args)
+void checkedVkCall(F &&f, Args &&...args)
 {
     const VkResult res = std::invoke(std::forward<F>(f), std::forward<Args>(args)...);
     if (res != VK_SUCCESS) {
@@ -129,6 +130,8 @@ public:
     Device &operator=(Device &&other);
 
     PhysDevice physDevice() const { return m_physDevice; }
+    VkQueue queue() const { return m_queue; }
+    VkCommandBuffer commandBuffer() const { return m_commandBuffer; }
 
     operator VkDevice() const { return m_device; }
 
@@ -137,6 +140,9 @@ private:
 
     PhysDevice m_physDevice;
     VkDevice m_device{ VK_NULL_HANDLE };
+    VkQueue m_queue{ VK_NULL_HANDLE };
+    VkCommandPool m_commandPool{ VK_NULL_HANDLE };
+    VkCommandBuffer m_commandBuffer{ VK_NULL_HANDLE };
 };
 
 class Buffer
@@ -153,6 +159,9 @@ public:
     Buffer &operator=(Buffer &&);
 
     VkDeviceSize size() const { return m_size; }
+
+    void *map(VkDeviceSize offset, VkDeviceSize size) const;
+    void unmap() const;
 
     operator VkBuffer() const { return m_buffer; }
 
@@ -204,6 +213,8 @@ public:
 
     Pipeline(Pipeline &&);
     Pipeline &operator=(Pipeline &&);
+
+    void dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const;
 
 private:
     const Device *m_device{ nullptr };
@@ -259,7 +270,7 @@ void Instance::create()
         .ppEnabledLayerNames = layers.data(),
     };
 
-    vkCheckedCall(vkCreateInstance, &createInfo, nullptr, &m_instance);
+    checkedVkCall(vkCreateInstance, &createInfo, nullptr, &m_instance);
 }
 
 std::vector<PhysDevice> Instance::physDevices() const
@@ -317,6 +328,9 @@ Device::Device(PhysDevice physDevice)
 
 Device::~Device()
 {
+    if (m_commandPool != VK_NULL_HANDLE)
+        vkDestroyCommandPool(m_device, m_commandPool, nullptr);
+
     if (m_device != VK_NULL_HANDLE)
         vkDestroyDevice(m_device, nullptr);
 }
@@ -324,16 +338,24 @@ Device::~Device()
 Device::Device(Device &&other)
     : m_physDevice{ std::exchange(other.m_physDevice, { }) }
     , m_device{ std::exchange(other.m_device, VK_NULL_HANDLE) }
+    , m_queue{ std::exchange(other.m_queue, VK_NULL_HANDLE) }
+    , m_commandPool{ std::exchange(other.m_commandPool, VK_NULL_HANDLE) }
+    , m_commandBuffer{ std::exchange(other.m_commandBuffer, VK_NULL_HANDLE) }
 {
 }
 
 Device &Device::operator=(Device &&other)
 {
     if (this != &other) {
+        if (m_commandPool != VK_NULL_HANDLE)
+            vkDestroyCommandPool(m_device, m_commandPool, nullptr);
         if (m_device != VK_NULL_HANDLE)
             vkDestroyDevice(m_device, nullptr);
         m_physDevice = std::exchange(other.m_physDevice, { });
         m_device = std::exchange(other.m_device, VK_NULL_HANDLE);
+        m_queue = std::exchange(other.m_queue, VK_NULL_HANDLE);
+        m_commandPool = std::exchange(other.m_commandPool, VK_NULL_HANDLE);
+        m_commandBuffer = std::exchange(other.m_commandBuffer, VK_NULL_HANDLE);
     }
     return *this;
 }
@@ -374,7 +396,26 @@ void Device::create()
         .pEnabledFeatures = &deviceFeatures
     };
 
-    vkCheckedCall(vkCreateDevice, m_physDevice, &createInfo, nullptr, &m_device);
+    checkedVkCall(vkCreateDevice, m_physDevice, &createInfo, nullptr, &m_device);
+
+    if (queueFamilyIndex.has_value()) {
+        vkGetDeviceQueue(m_device, *queueFamilyIndex, 0, &m_queue);
+
+        VkCommandPoolCreateInfo commandPoolCreateInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+            .flags = 0,
+            .queueFamilyIndex = *queueFamilyIndex
+        };
+        checkedVkCall(vkCreateCommandPool, m_device, &commandPoolCreateInfo, nullptr, &m_commandPool);
+
+        VkCommandBufferAllocateInfo commandBufferAllocateInfo = {
+            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            .commandPool = m_commandPool,
+            .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            .commandBufferCount = 1,
+        };
+        checkedVkCall(vkAllocateCommandBuffers, m_device, &commandBufferAllocateInfo, &m_commandBuffer);
+    }
 }
 
 Buffer::Buffer(const Device *device, VkDeviceSize size)
@@ -424,7 +465,7 @@ void Buffer::create()
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE
     };
-    vkCheckedCall(vkCreateBuffer, *m_device, &createInfo, nullptr, &m_buffer);
+    checkedVkCall(vkCreateBuffer, *m_device, &createInfo, nullptr, &m_buffer);
 
     VkMemoryRequirements memoryRequirements = { };
     vkGetBufferMemoryRequirements(*m_device, m_buffer, &memoryRequirements);
@@ -450,9 +491,21 @@ void Buffer::create()
             .allocationSize = memoryRequirements.size,
             .memoryTypeIndex = *memoryTypeIndex
         };
-        vkCheckedCall(vkAllocateMemory, *m_device, &allocateInfo, nullptr, &m_memory);
-        vkCheckedCall(vkBindBufferMemory, *m_device, m_buffer, m_memory, 0);
+        checkedVkCall(vkAllocateMemory, *m_device, &allocateInfo, nullptr, &m_memory);
+        checkedVkCall(vkBindBufferMemory, *m_device, m_buffer, m_memory, 0);
     }
+}
+
+void *Buffer::map(VkDeviceSize offset, VkDeviceSize size) const
+{
+    void *mappedMemory;
+    checkedVkCall(vkMapMemory, *m_device, m_memory, offset, size, 0, &mappedMemory);
+    return mappedMemory;
+}
+
+void Buffer::unmap() const
+{
+    vkUnmapMemory(*m_device, m_memory);
 }
 
 Program::Program(const Device *device, const std::string_view path)
@@ -495,7 +548,7 @@ void Program::create()
         .codeSize = static_cast<uint32_t>(code.size()),
         .pCode = code.data()
     };
-    vkCheckedCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
+    checkedVkCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
 }
 
 template<std::same_as<Buffer>... Buffers>
@@ -520,7 +573,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .pBindings = bindings.data()
     };
 
-    vkCheckedCall(vkCreateDescriptorSetLayout, *m_device, &descriptorSetLayoutCreateInfo, nullptr, &m_descriptorSetLayout);
+    checkedVkCall(vkCreateDescriptorSetLayout, *m_device, &descriptorSetLayoutCreateInfo, nullptr, &m_descriptorSetLayout);
 
     // allocate descriptor set
 
@@ -536,7 +589,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .pPoolSizes = &descriptorPoolSize
     };
 
-    vkCheckedCall(vkCreateDescriptorPool, *m_device, &descriptorPoolCreateInfo, nullptr, &m_descriptorPool);
+    checkedVkCall(vkCreateDescriptorPool, *m_device, &descriptorPoolCreateInfo, nullptr, &m_descriptorPool);
 
     VkDescriptorSetAllocateInfo descriptorSetAllocateInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -545,7 +598,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .pSetLayouts = &m_descriptorSetLayout
     };
 
-    vkCheckedCall(vkAllocateDescriptorSets, *m_device, &descriptorSetAllocateInfo, &m_descriptorSet);
+    checkedVkCall(vkAllocateDescriptorSets, *m_device, &descriptorSetAllocateInfo, &m_descriptorSet);
 
     // update descriptor set
 
@@ -577,7 +630,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .setLayoutCount = 1,
         .pSetLayouts = &m_descriptorSetLayout
     };
-    vkCheckedCall(vkCreatePipelineLayout, *m_device, &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout);
+    checkedVkCall(vkCreatePipelineLayout, *m_device, &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout);
 
     // create pipeline
 
@@ -591,7 +644,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .layout = m_pipelineLayout
     };
 
-    vkCheckedCall(vkCreateComputePipelines, *device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
+    checkedVkCall(vkCreateComputePipelines, *device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
 }
 
 Pipeline::~Pipeline()
@@ -609,6 +662,45 @@ Pipeline::~Pipeline()
         vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
 }
 
+void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const
+{
+    const auto commandBuffer = m_device->commandBuffer();
+
+    // record command buffer
+
+    VkCommandBufferBeginInfo beginInfo = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    checkedVkCall(vkBeginCommandBuffer, commandBuffer, &beginInfo);
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
+
+    checkedVkCall(vkEndCommandBuffer, commandBuffer);
+
+    // submit
+
+    VkSubmitInfo submitInfo = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &commandBuffer
+    };
+
+    VkFence fence;
+    VkFenceCreateInfo fenceCreateInfo = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = 0
+    };
+    checkedVkCall(vkCreateFence, *m_device, &fenceCreateInfo, nullptr, &fence);
+
+    checkedVkCall(vkQueueSubmit, m_device->queue(), 1, &submitInfo, fence);
+    checkedVkCall(vkWaitForFences, *m_device, 1, &fence, VK_TRUE, std::numeric_limits<uint64_t>::max());
+
+    vkDestroyFence(*m_device, fence, nullptr);
+}
+
 } // namespace v
 
 int main()
@@ -620,10 +712,20 @@ int main()
     }
     if (!physDevices.empty()) {
         v::Device device(physDevices.front());
-        v::Buffer bufferA(&device, 2048);
-        v::Buffer bufferB(&device, 2048);
-        v::Buffer bufferC(&device, 2048);
+
+        constexpr auto kSize = 50;
+        v::Buffer buffer(&device, kSize * sizeof(float));
+
         v::Program program(&device, "shader.spv");
-        v::Pipeline(&device, &program, bufferA, bufferB, bufferC);
+        v::Pipeline pipeline(&device, &program, buffer);
+
+        constexpr auto kWorkgroupSize = 32;
+        pipeline.dispatch((kSize + kWorkgroupSize - 1) / kWorkgroupSize, 1, 1);
+
+        const auto *addr = reinterpret_cast<float *>(buffer.map(0, buffer.size()));
+        for (std::size_t i = 0; i < kSize; ++i) {
+            std::println("{}: {}", i, addr[i]);
+        }
+        buffer.unmap();
     }
 }
