@@ -651,15 +651,43 @@ Pipeline::~Pipeline()
 {
     if (m_pipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(*m_device, m_pipeline, nullptr);
-
     if (m_pipelineLayout != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
-
     if (m_descriptorPool != VK_NULL_HANDLE)
         vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
-
     if (m_descriptorSetLayout != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+}
+
+Pipeline::Pipeline(Pipeline&& other)
+    : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_descriptorSetLayout{ std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE) }
+    , m_descriptorPool{ std::exchange(other.m_descriptorPool, VK_NULL_HANDLE) }
+    , m_descriptorSet{ std::exchange(other.m_descriptorSet, VK_NULL_HANDLE) }
+    , m_pipelineLayout{ std::exchange(other.m_pipelineLayout, VK_NULL_HANDLE) }
+    , m_pipeline{ std::exchange(other.m_pipeline, VK_NULL_HANDLE) }
+{
+}
+
+Pipeline& Pipeline::operator=(Pipeline&& other)
+{
+    if (this != &other) {
+        if (m_pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(*m_device, m_pipeline, nullptr);
+        if (m_pipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
+        if (m_descriptorPool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
+        if (m_descriptorSetLayout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+        m_device = std::exchange(other.m_device, nullptr);
+        m_descriptorSetLayout = std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE);
+        m_descriptorPool = std::exchange(other.m_descriptorPool, VK_NULL_HANDLE);
+        m_descriptorSet = std::exchange(other.m_descriptorSet, VK_NULL_HANDLE);
+        m_pipelineLayout = std::exchange(other.m_pipelineLayout, VK_NULL_HANDLE);
+        m_pipeline = std::exchange(other.m_pipeline, VK_NULL_HANDLE);
+    }
+    return *this;
 }
 
 void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const
