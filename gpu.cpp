@@ -14,7 +14,7 @@ module;
 
 export module gpu;
 
-template<typename T>
+export template<typename T>
     requires std::is_enum_v<T>
 struct std::formatter<T> {
     constexpr auto parse(std::format_parse_context &ctx)
