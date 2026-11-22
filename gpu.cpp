@@ -3,6 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <cassert>
 #include <experimental/meta>
 #include <limits>
 #include <memory>
@@ -76,6 +77,10 @@ class Buffer;
 class Program;
 class Pipeline;
 
+template<typename T>
+    requires std::is_trivially_copyable_v<T>
+class TypedBuffer;
+
 class Instance
 {
 public:
@@ -142,6 +147,14 @@ public:
     VkCommandBuffer commandBuffer() const { return m_commandBuffer; }
 
     Buffer createBuffer(VkDeviceSize size) const;
+
+    template<typename T>
+        requires std::is_trivially_copyable_v<T>
+    TypedBuffer<T> createTypedBuffer(std::size_t size) const
+    {
+        return TypedBuffer<T>{ this, size };
+    }
+
     Program createProgram(std::string_view path) const;
 
     operator VkDevice() const { return m_device; }
@@ -171,23 +184,49 @@ public:
     Buffer(Buffer &&);
     Buffer &operator=(Buffer &&);
 
-    VkDeviceSize size() const { return m_size; }
+    VkDeviceSize sizeBytes() const { return m_sizeBytes; }
 
-    std::span<std::byte> map(VkDeviceSize offset, VkDeviceSize size) const;
-    std::span<std::byte> map() const;
+    std::span<std::byte> mapBytes(VkDeviceSize offset, VkDeviceSize sizeBytes) const;
+    std::span<std::byte> mapBytes() const;
     void unmap() const;
 
     operator VkBuffer() const { return m_buffer; }
 
-private:
+protected:
     explicit Buffer(const Device *device, VkDeviceSize size);
+
+private:
     void create();
 
     const Device *m_device{ nullptr };
-    VkDeviceSize m_size{ };
+    VkDeviceSize m_sizeBytes{ };
     VkBuffer m_buffer{ VK_NULL_HANDLE };
     VkDeviceMemory m_memory{ VK_NULL_HANDLE };
 
+    friend class Device;
+};
+
+template<typename T>
+    requires std::is_trivially_copyable_v<T>
+class TypedBuffer : public Buffer
+{
+public:
+    std::span<T> map() const
+    {
+        const auto bytes = mapBytes();
+        assert(bytes.size() == m_size * sizeof(T));
+        assert(reinterpret_cast<std::uintptr_t>(bytes.data()) % alignof(T) == 0);
+        return { reinterpret_cast<T *>(bytes.data()), m_size };
+    }
+
+private:
+    explicit TypedBuffer(const Device *device, std::size_t size)
+        : Buffer{ device, size * sizeof(T) }
+        , m_size{ size }
+    {
+    }
+
+    std::size_t m_size;
     friend class Device;
 };
 
@@ -205,7 +244,7 @@ public:
 
     std::string_view path() const { return m_path; }
 
-    template<std::same_as<Buffer>... Buffers>
+    template<std::derived_from<Buffer>... Buffers>
     Pipeline createPipeline(const Buffers &...buffers) const;
 
     operator VkShaderModule() const { return m_shaderModule; }
@@ -237,7 +276,7 @@ public:
     void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1) const;
 
 private:
-    template<std::same_as<Buffer>... Buffers>
+    template<std::derived_from<Buffer>... Buffers>
     explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
 
     const Device *m_device{ nullptr };
@@ -458,9 +497,9 @@ Program Device::createProgram(std::string_view path) const
     return Program{ this, path };
 }
 
-Buffer::Buffer(const Device *device, VkDeviceSize size)
+Buffer::Buffer(const Device *device, VkDeviceSize sizeBytes)
     : m_device{ device }
-    , m_size{ size }
+    , m_sizeBytes{ sizeBytes }
 {
     create();
 }
@@ -476,7 +515,7 @@ Buffer::~Buffer()
 
 Buffer::Buffer(Buffer &&other)
     : m_device{ std::exchange(other.m_device, nullptr) }
-    , m_size{ std::exchange(other.m_size, 0) }
+    , m_sizeBytes{ std::exchange(other.m_sizeBytes, 0) }
     , m_buffer{ std::exchange(other.m_buffer, VK_NULL_HANDLE) }
     , m_memory{ std::exchange(other.m_memory, VK_NULL_HANDLE) }
 {
@@ -490,7 +529,7 @@ Buffer &Buffer::operator=(Buffer &&other)
         if (m_buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(*m_device, m_buffer, nullptr);
         m_device = std::exchange(other.m_device, nullptr);
-        m_size = std::exchange(other.m_size, 0);
+        m_sizeBytes = std::exchange(other.m_sizeBytes, 0);
         m_buffer = std::exchange(other.m_buffer, VK_NULL_HANDLE);
         m_memory = std::exchange(other.m_memory, VK_NULL_HANDLE);
     }
@@ -501,7 +540,7 @@ void Buffer::create()
 {
     VkBufferCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = m_size,
+        .size = m_sizeBytes,
         .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE
     };
@@ -536,16 +575,16 @@ void Buffer::create()
     }
 }
 
-std::span<std::byte> Buffer::map(VkDeviceSize offset, VkDeviceSize size) const
+std::span<std::byte> Buffer::mapBytes(VkDeviceSize offset, VkDeviceSize size) const
 {
     void *mappedMemory;
     checkedVkCall(vkMapMemory, *m_device, m_memory, offset, size, 0, &mappedMemory);
     return { static_cast<std::byte *>(mappedMemory), size };
 }
 
-std::span<std::byte> Buffer::map() const
+std::span<std::byte> Buffer::mapBytes() const
 {
-    return map(0, m_size);
+    return mapBytes(0, m_sizeBytes);
 }
 
 void Buffer::unmap() const
@@ -596,13 +635,13 @@ void Program::create()
     checkedVkCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
 }
 
-template<std::same_as<Buffer>... Buffers>
+template<std::derived_from<Buffer>... Buffers>
 Pipeline Program::createPipeline(const Buffers &...buffers) const
 {
     return Pipeline{ m_device, this, buffers... };
 }
 
-template<std::same_as<Buffer>... Buffers>
+template<std::derived_from<Buffer>... Buffers>
 Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &...buffers)
     : m_device{ device }
 {
@@ -657,7 +696,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         VkDescriptorBufferInfo{
                 .buffer = buffers,
                 .offset = 0,
-                .range = buffers.size() }...
+                .range = buffers.sizeBytes() }...
     };
 
     const auto descriptorWrites = [this, &bufferInfos]<std::size_t... Is>(std::index_sequence<Is...>) {
