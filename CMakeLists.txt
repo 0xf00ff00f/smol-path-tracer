@@ -39,3 +39,4 @@ macro(AddDemo)
 endmacro()
 
 AddDemo(NAME simple SOURCES simple.cpp SHADERS simple.comp)
+AddDemo(NAME raycast SOURCES raycast.cpp SHADERS raycast.comp)
