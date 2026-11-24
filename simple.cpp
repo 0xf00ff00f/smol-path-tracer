@@ -22,11 +22,20 @@ int main()
         renderdoc::FrameCapture capture(physDevice.name().c_str());
 #endif
 
+        // std140
+        struct alignas(16) Float140 {
+            explicit Float140(float v) : value{ v } { };
+            operator float() const { return value; }
+            Float140& operator=(float v) { value = v; return *this; }
+            float value;
+        };
+
         constexpr auto kSize = 50;
-        gpu::TypedBuffer<float> inBuffer = device.createTypedBuffer<float>(kSize);
+        gpu::TypedBuffer<Float140> inBuffer = device.createTypedBuffer<Float140>(kSize, gpu::BufferUsage::Uniform);
         gpu::TypedBuffer<float> outBuffer = device.createTypedBuffer<float>(kSize);
 
-        std::ranges::iota(inBuffer.map(), 1);
+        auto data = inBuffer.map();
+        std::iota(data.begin(), data.end(), 1.0f);
         inBuffer.unmap();
 
         gpu::Program program = device.createProgram("simple.comp.spv");

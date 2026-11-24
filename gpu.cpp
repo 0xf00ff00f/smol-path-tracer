@@ -3,6 +3,7 @@ module;
 #include <vulkan/vulkan.h>
 
 #include <array>
+#include <algorithm>
 #include <cassert>
 #include <experimental/meta>
 #include <limits>
@@ -12,7 +13,6 @@ module;
 #include <ranges>
 #include <utility>
 #include <vector>
-#include <unordered_map>
 
 export module gpu;
 
@@ -131,6 +131,11 @@ private:
     VkPhysicalDevice m_physDevice{ VK_NULL_HANDLE };
 };
 
+enum class BufferUsage {
+    Uniform,
+    Storage,
+};
+
 class Device
 {
 public:
@@ -147,13 +152,13 @@ public:
     VkQueue queue() const { return m_queue; }
     VkCommandBuffer commandBuffer() const { return m_commandBuffer; }
 
-    Buffer createBuffer(VkDeviceSize size) const;
+    Buffer createBuffer(VkDeviceSize size, BufferUsage usage = BufferUsage::Storage) const;
 
     template<typename T>
         requires std::is_trivially_copyable_v<T>
-    TypedBuffer<T> createTypedBuffer(std::size_t size) const
+    TypedBuffer<T> createTypedBuffer(std::size_t size, BufferUsage usage = BufferUsage::Storage) const
     {
-        return TypedBuffer<T>{ this, size };
+        return TypedBuffer<T>{ this, size, usage };
     }
 
     Program createProgram(std::string_view path) const;
@@ -186,6 +191,7 @@ public:
     Buffer &operator=(Buffer &&);
 
     VkDeviceSize sizeBytes() const { return m_sizeBytes; }
+    BufferUsage usage() const { return m_usage; }
 
     std::span<std::byte> mapBytes(VkDeviceSize offset, VkDeviceSize sizeBytes) const;
     std::span<std::byte> mapBytes() const;
@@ -194,12 +200,13 @@ public:
     operator VkBuffer() const { return m_buffer; }
 
 protected:
-    explicit Buffer(const Device *device, VkDeviceSize size);
+    explicit Buffer(const Device *device, VkDeviceSize size, BufferUsage usage);
 
 private:
     void create();
 
     const Device *m_device{ nullptr };
+    BufferUsage m_usage{ BufferUsage::Storage };
     VkDeviceSize m_sizeBytes{ };
     VkBuffer m_buffer{ VK_NULL_HANDLE };
     VkDeviceMemory m_memory{ VK_NULL_HANDLE };
@@ -221,8 +228,8 @@ public:
     }
 
 private:
-    explicit TypedBuffer(const Device *device, std::size_t size)
-        : Buffer{ device, size * sizeof(T) }
+    explicit TypedBuffer(const Device *device, std::size_t size, BufferUsage usage)
+        : Buffer{ device, size * sizeof(T), usage }
         , m_size{ size }
     {
     }
@@ -281,15 +288,17 @@ private:
     void create();
     void destroy();
 
-    struct BufferInfo {
+    struct BufferBinding {
+        uint32_t binding;
         VkBuffer handle;
         VkDeviceSize size;
+        BufferUsage usage;
     };
 
     bool m_isDirty{ true };
     const Device *m_device{ nullptr };
     const Program *m_program{ nullptr };
-    std::unordered_map<uint32_t, BufferInfo> m_bufferBindings;
+    std::vector<BufferBinding> m_bufferBindings;
     VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
     VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
@@ -497,9 +506,9 @@ void Device::create()
     }
 }
 
-Buffer Device::createBuffer(VkDeviceSize size) const
+Buffer Device::createBuffer(VkDeviceSize size, BufferUsage usage) const
 {
-    return Buffer{ this, size };
+    return Buffer{ this, size, usage };
 }
 
 Program Device::createProgram(std::string_view path) const
@@ -507,9 +516,10 @@ Program Device::createProgram(std::string_view path) const
     return Program{ this, path };
 }
 
-Buffer::Buffer(const Device *device, VkDeviceSize sizeBytes)
+Buffer::Buffer(const Device *device, VkDeviceSize sizeBytes, BufferUsage usage)
     : m_device{ device }
     , m_sizeBytes{ sizeBytes }
+    , m_usage{ usage }
 {
     create();
 }
@@ -546,12 +556,24 @@ Buffer &Buffer::operator=(Buffer &&other)
     return *this;
 }
 
+VkBufferUsageFlagBits toBufferUsageFlagBits(BufferUsage usage)
+{
+    switch (usage) {
+    case BufferUsage::Uniform:
+        return VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    case BufferUsage::Storage:
+        return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    default:
+        return static_cast<VkBufferUsageFlagBits>(0);
+    }
+}
+
 void Buffer::create()
 {
     VkBufferCreateInfo createInfo = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size = m_sizeBytes,
-        .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        .usage = toBufferUsageFlagBits(m_usage),
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE
     };
     checkedVkCall(vkCreateBuffer, *m_device, &createInfo, nullptr, &m_buffer);
@@ -656,6 +678,18 @@ Pipeline::Pipeline(const Device *device, const Program *program)
 {
 }
 
+VkDescriptorType toDescriptorType(BufferUsage usage)
+{
+    switch (usage) {
+    case BufferUsage::Uniform:
+        return VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    case BufferUsage::Storage:
+        return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    default:
+        return static_cast<VkDescriptorType>(0);
+    }
+}
+
 void Pipeline::create()
 {
     // create descriptor set layout
@@ -663,10 +697,10 @@ void Pipeline::create()
     std::vector<VkDescriptorSetLayoutBinding> bindings;
     bindings.reserve(m_bufferBindings.size());
 
-    for (const auto &[binding, _] : m_bufferBindings) {
+    for (const auto &bufferBinding : m_bufferBindings) {
         bindings.push_back(VkDescriptorSetLayoutBinding{
-                .binding = binding,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .binding = bufferBinding.binding,
+                .descriptorType = toDescriptorType(bufferBinding.usage),
                 .descriptorCount = 1,
                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT });
     }
@@ -681,16 +715,24 @@ void Pipeline::create()
 
     // allocate descriptor set
 
-    VkDescriptorPoolSize descriptorPoolSize = {
-        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = static_cast<uint32_t>(m_bufferBindings.size())
+    const auto storageBufferBindings = std::ranges::count_if(m_bufferBindings, [](const BufferBinding &bufferBinding) { return bufferBinding.usage == BufferUsage::Storage; });
+    const auto uniformBufferBindings = std::ranges::count_if(m_bufferBindings, [](const BufferBinding &bufferBinding) { return bufferBinding.usage == BufferUsage::Uniform; });
+
+    const auto poolSizes = std::array{
+        VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = static_cast<uint32_t>(uniformBufferBindings),
+        },
+        VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = static_cast<uint32_t>(storageBufferBindings) },
     };
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes = &descriptorPoolSize
+        .poolSizeCount = poolSizes.size(),
+        .pPoolSizes = poolSizes.data()
     };
 
     checkedVkCall(vkCreateDescriptorPool, *m_device, &descriptorPoolCreateInfo, nullptr, &m_descriptorPool);
@@ -712,18 +754,18 @@ void Pipeline::create()
     std::vector<VkWriteDescriptorSet> descriptorWrites;
     descriptorWrites.reserve(m_bufferBindings.size());
 
-    for (const auto &[binding, buffer] : m_bufferBindings) {
+    for (const auto &bufferBinding : m_bufferBindings) {
         auto bufferInfo = std::make_unique<VkDescriptorBufferInfo>(VkDescriptorBufferInfo{
-                .buffer = buffer.handle,
+                .buffer = bufferBinding.handle,
                 .offset = 0,
-                .range = buffer.size });
+                .range = bufferBinding.size });
 
         descriptorWrites.push_back(VkWriteDescriptorSet{
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = m_descriptorSet,
-                .dstBinding = binding,
+                .dstBinding = bufferBinding.binding,
                 .descriptorCount = 1,
-                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorType = toDescriptorType(bufferBinding.usage),
                 .pBufferInfo = bufferInfo.get() });
 
         bufferInfos.push_back(std::move(bufferInfo));
@@ -808,7 +850,17 @@ Pipeline &Pipeline::operator=(Pipeline &&other)
 
 void Pipeline::bind(uint32_t binding, const Buffer &buffer)
 {
-    m_bufferBindings.emplace(binding, BufferInfo{ static_cast<VkBuffer>(buffer), buffer.sizeBytes() });
+    const auto alreadyBound = std::ranges::any_of(m_bufferBindings, [binding, &buffer](const BufferBinding &bufferBinding) {
+        return bufferBinding.binding == binding && bufferBinding.usage == buffer.usage();
+    });
+    if (alreadyBound) {
+        std::println(stderr, "{} already bound to {}", buffer.usage(), binding);
+    }
+    m_bufferBindings.push_back(BufferBinding{
+            .binding = binding,
+            .handle = static_cast<VkBuffer>(buffer),
+            .size = buffer.sizeBytes(),
+            .usage = buffer.usage() });
     m_isDirty = true;
 }
 
