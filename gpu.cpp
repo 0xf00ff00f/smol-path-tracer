@@ -825,6 +825,7 @@ Pipeline::~Pipeline()
 Pipeline::Pipeline(Pipeline &&other)
     : m_device{ std::exchange(other.m_device, nullptr) }
     , m_program{ std::exchange(other.m_program, nullptr) }
+    , m_bufferBindings{ std::move(other.m_bufferBindings) }
     , m_descriptorSetLayout{ std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE) }
     , m_descriptorPool{ std::exchange(other.m_descriptorPool, VK_NULL_HANDLE) }
     , m_descriptorSet{ std::exchange(other.m_descriptorSet, VK_NULL_HANDLE) }
@@ -839,6 +840,7 @@ Pipeline &Pipeline::operator=(Pipeline &&other)
         destroy();
         m_device = std::exchange(other.m_device, nullptr);
         m_program = std::exchange(other.m_program, nullptr);
+        m_bufferBindings = std::move(other.m_bufferBindings);
         m_descriptorSetLayout = std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE);
         m_descriptorPool = std::exchange(other.m_descriptorPool, VK_NULL_HANDLE);
         m_descriptorSet = std::exchange(other.m_descriptorSet, VK_NULL_HANDLE);
