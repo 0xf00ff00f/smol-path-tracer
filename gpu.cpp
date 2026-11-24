@@ -715,23 +715,22 @@ void Pipeline::create()
 
     // allocate descriptor set
 
-    const auto storageBufferBindings = std::ranges::count_if(m_bufferBindings, [](const BufferBinding &bufferBinding) { return bufferBinding.usage == BufferUsage::Storage; });
-    const auto uniformBufferBindings = std::ranges::count_if(m_bufferBindings, [](const BufferBinding &bufferBinding) { return bufferBinding.usage == BufferUsage::Uniform; });
-
-    const auto poolSizes = std::array{
-        VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                .descriptorCount = static_cast<uint32_t>(uniformBufferBindings),
-        },
-        VkDescriptorPoolSize{
-                .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                .descriptorCount = static_cast<uint32_t>(storageBufferBindings) },
-    };
+    std::vector<VkDescriptorPoolSize> poolSizes;
+    for (auto usage : { BufferUsage::Storage, BufferUsage::Uniform }) {
+        const auto count = std::ranges::count(m_bufferBindings, usage, &BufferBinding::usage);
+        if (count > 0) {
+            poolSizes.push_back(
+                    VkDescriptorPoolSize{
+                            .type = toDescriptorType(usage),
+                            .descriptorCount = static_cast<uint32_t>(count),
+                    });
+        }
+    }
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .maxSets = 1,
-        .poolSizeCount = poolSizes.size(),
+        .poolSizeCount = static_cast<uint32_t>(poolSizes.size()),
         .pPoolSizes = poolSizes.data()
     };
 
