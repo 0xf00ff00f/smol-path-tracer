@@ -42,7 +42,10 @@ int main()
         inBuffer.unmap();
 
         gpu::Program program = device.createProgram("simple.comp.spv");
-        gpu::Pipeline pipeline = program.createPipeline(inBuffer, outBuffer);
+
+        gpu::Pipeline pipeline = program.createPipeline();
+        pipeline.bind(0, inBuffer);
+        pipeline.bind(1, outBuffer);
 
         constexpr auto kWorkgroupSize = 32;
         pipeline.dispatch((kSize + kWorkgroupSize - 1) / kWorkgroupSize);

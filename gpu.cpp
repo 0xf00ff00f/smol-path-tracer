@@ -12,6 +12,7 @@ module;
 #include <ranges>
 #include <utility>
 #include <vector>
+#include <unordered_map>
 
 export module gpu;
 
@@ -244,8 +245,7 @@ public:
 
     std::string_view path() const { return m_path; }
 
-    template<std::derived_from<Buffer>... Buffers>
-    Pipeline createPipeline(const Buffers &...buffers) const;
+    Pipeline createPipeline() const;
 
     operator VkShaderModule() const { return m_shaderModule; }
 
@@ -273,13 +273,23 @@ public:
     Pipeline(Pipeline &&);
     Pipeline &operator=(Pipeline &&);
 
-    void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1) const;
+    void bind(uint32_t binding, const Buffer &buffer);
+    void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
 
 private:
-    template<std::derived_from<Buffer>... Buffers>
-    explicit Pipeline(const Device *device, const Program *program, const Buffers &...buffers);
+    explicit Pipeline(const Device *device, const Program *program);
+    void create();
+    void destroy();
 
+    struct BufferInfo {
+        VkBuffer handle;
+        VkDeviceSize size;
+    };
+
+    bool m_isDirty{ true };
     const Device *m_device{ nullptr };
+    const Program *m_program{ nullptr };
+    std::unordered_map<uint32_t, BufferInfo> m_bufferBindings;
     VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
     VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
@@ -635,31 +645,35 @@ void Program::create()
     checkedVkCall(vkCreateShaderModule, *m_device, &createInfo, nullptr, &m_shaderModule);
 }
 
-template<std::derived_from<Buffer>... Buffers>
-Pipeline Program::createPipeline(const Buffers &...buffers) const
+Pipeline Program::createPipeline() const
 {
-    return Pipeline{ m_device, this, buffers... };
+    return Pipeline{ m_device, this };
 }
 
-template<std::derived_from<Buffer>... Buffers>
-Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &...buffers)
+Pipeline::Pipeline(const Device *device, const Program *program)
     : m_device{ device }
+    , m_program{ program }
+{
+}
+
+void Pipeline::create()
 {
     // create descriptor set layout
 
-    const auto bindings = []<std::size_t... Is>(std::index_sequence<Is...>) {
-        return std::array{
-            VkDescriptorSetLayoutBinding{
-                    .binding = Is,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .descriptorCount = 1,
-                    .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT }...
-        };
-    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.reserve(m_bufferBindings.size());
+
+    for (const auto &[binding, _] : m_bufferBindings) {
+        bindings.push_back(VkDescriptorSetLayoutBinding{
+                .binding = binding,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT });
+    }
 
     VkDescriptorSetLayoutCreateInfo descriptorSetLayoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = bindings.size(),
+        .bindingCount = static_cast<uint32_t>(bindings.size()),
         .pBindings = bindings.data()
     };
 
@@ -669,7 +683,7 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
 
     VkDescriptorPoolSize descriptorPoolSize = {
         .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = sizeof...(Buffers)
+        .descriptorCount = static_cast<uint32_t>(m_bufferBindings.size())
     };
 
     VkDescriptorPoolCreateInfo descriptorPoolCreateInfo = {
@@ -692,24 +706,28 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
 
     // update descriptor set
 
-    const auto bufferInfos = std::array{
-        VkDescriptorBufferInfo{
-                .buffer = buffers,
-                .offset = 0,
-                .range = buffers.sizeBytes() }...
-    };
+    std::vector<std::unique_ptr<VkDescriptorBufferInfo>> bufferInfos;
+    bufferInfos.reserve(m_bufferBindings.size());
 
-    const auto descriptorWrites = [this, &bufferInfos]<std::size_t... Is>(std::index_sequence<Is...>) {
-        return std::array{
-            VkWriteDescriptorSet{
-                    .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                    .dstSet = m_descriptorSet,
-                    .dstBinding = Is,
-                    .descriptorCount = 1,
-                    .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                    .pBufferInfo = &bufferInfos[Is] }...
-        };
-    }(std::make_index_sequence<sizeof...(Buffers)>{ });
+    std::vector<VkWriteDescriptorSet> descriptorWrites;
+    descriptorWrites.reserve(m_bufferBindings.size());
+
+    for (const auto &[binding, buffer] : m_bufferBindings) {
+        auto bufferInfo = std::make_unique<VkDescriptorBufferInfo>(VkDescriptorBufferInfo{
+                .buffer = buffer.handle,
+                .offset = 0,
+                .range = buffer.size });
+
+        descriptorWrites.push_back(VkWriteDescriptorSet{
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = m_descriptorSet,
+                .dstBinding = binding,
+                .descriptorCount = 1,
+                .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                .pBufferInfo = bufferInfo.get() });
+
+        bufferInfos.push_back(std::move(bufferInfo));
+    }
 
     vkUpdateDescriptorSets(*m_device, descriptorWrites.size(), descriptorWrites.data(), 0, nullptr);
 
@@ -729,28 +747,42 @@ Pipeline::Pipeline(const Device *device, const Program *program, const Buffers &
         .stage = VkPipelineShaderStageCreateInfo{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                 .stage = VK_SHADER_STAGE_COMPUTE_BIT,
-                .module = *program,
+                .module = *m_program,
                 .pName = "main" },
         .layout = m_pipelineLayout
     };
 
-    checkedVkCall(vkCreateComputePipelines, *device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
+    checkedVkCall(vkCreateComputePipelines, *m_device, VK_NULL_HANDLE, 1, &pipelineCreateInfo, nullptr, &m_pipeline);
+}
+
+void Pipeline::destroy()
+{
+    if (m_pipeline != VK_NULL_HANDLE) {
+        vkDestroyPipeline(*m_device, m_pipeline, nullptr);
+        m_pipeline = VK_NULL_HANDLE;
+    }
+    if (m_pipelineLayout != VK_NULL_HANDLE) {
+        vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
+        m_pipelineLayout = VK_NULL_HANDLE;
+    }
+    if (m_descriptorPool != VK_NULL_HANDLE) {
+        vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
+        m_descriptorPool = VK_NULL_HANDLE;
+    }
+    if (m_descriptorSetLayout != VK_NULL_HANDLE) {
+        vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+        m_descriptorSetLayout = VK_NULL_HANDLE;
+    }
 }
 
 Pipeline::~Pipeline()
 {
-    if (m_pipeline != VK_NULL_HANDLE)
-        vkDestroyPipeline(*m_device, m_pipeline, nullptr);
-    if (m_pipelineLayout != VK_NULL_HANDLE)
-        vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
-    if (m_descriptorPool != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
-    if (m_descriptorSetLayout != VK_NULL_HANDLE)
-        vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+    destroy();
 }
 
 Pipeline::Pipeline(Pipeline &&other)
     : m_device{ std::exchange(other.m_device, nullptr) }
+    , m_program{ std::exchange(other.m_program, nullptr) }
     , m_descriptorSetLayout{ std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE) }
     , m_descriptorPool{ std::exchange(other.m_descriptorPool, VK_NULL_HANDLE) }
     , m_descriptorSet{ std::exchange(other.m_descriptorSet, VK_NULL_HANDLE) }
@@ -762,15 +794,9 @@ Pipeline::Pipeline(Pipeline &&other)
 Pipeline &Pipeline::operator=(Pipeline &&other)
 {
     if (this != &other) {
-        if (m_pipeline != VK_NULL_HANDLE)
-            vkDestroyPipeline(*m_device, m_pipeline, nullptr);
-        if (m_pipelineLayout != VK_NULL_HANDLE)
-            vkDestroyPipelineLayout(*m_device, m_pipelineLayout, nullptr);
-        if (m_descriptorPool != VK_NULL_HANDLE)
-            vkDestroyDescriptorPool(*m_device, m_descriptorPool, nullptr);
-        if (m_descriptorSetLayout != VK_NULL_HANDLE)
-            vkDestroyDescriptorSetLayout(*m_device, m_descriptorSetLayout, nullptr);
+        destroy();
         m_device = std::exchange(other.m_device, nullptr);
+        m_program = std::exchange(other.m_program, nullptr);
         m_descriptorSetLayout = std::exchange(other.m_descriptorSetLayout, VK_NULL_HANDLE);
         m_descriptorPool = std::exchange(other.m_descriptorPool, VK_NULL_HANDLE);
         m_descriptorSet = std::exchange(other.m_descriptorSet, VK_NULL_HANDLE);
@@ -780,8 +806,19 @@ Pipeline &Pipeline::operator=(Pipeline &&other)
     return *this;
 }
 
-void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) const
+void Pipeline::bind(uint32_t binding, const Buffer &buffer)
 {
+    m_bufferBindings.emplace(binding, BufferInfo{ static_cast<VkBuffer>(buffer), buffer.sizeBytes() });
+    m_isDirty = true;
+}
+
+void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
+{
+    if (m_isDirty) {
+        create();
+        m_isDirty = false;
+    }
+
     const auto commandBuffer = m_device->commandBuffer();
 
     // record command buffer

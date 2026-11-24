@@ -231,7 +231,10 @@ int main()
     gpu::TypedBuffer<Color> imageBuffer = device.createTypedBuffer<Color>(kWidth * kHeight);
 
     gpu::Program program = device.createProgram("raycast.comp.spv");
-    gpu::Pipeline pipeline = program.createPipeline(meshBuffer, imageBuffer);
+
+    gpu::Pipeline pipeline = program.createPipeline();
+    pipeline.bind(0, meshBuffer);
+    pipeline.bind(1, imageBuffer);
 
     constexpr auto kWorkgroupSize = 32;
     pipeline.dispatch((kWidth + kWorkgroupSize - 1) / kWorkgroupSize, (kHeight + kWorkgroupSize - 1) / kWorkgroupSize);
