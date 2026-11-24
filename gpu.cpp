@@ -639,7 +639,7 @@ Program::~Program()
 
 Program::Program(Program &&other)
     : m_device{ std::exchange(other.m_device, nullptr) }
-    , m_path{ std::exchange(other.m_path, { }) }
+    , m_path{ std::move(other.m_path) }
     , m_shaderModule{ std::exchange(other.m_shaderModule, VK_NULL_HANDLE) }
 {
 }
@@ -650,7 +650,7 @@ Program &Program::operator=(Program &&other)
         if (m_shaderModule != VK_NULL_HANDLE)
             vkDestroyShaderModule(*m_device, m_shaderModule, nullptr);
         m_device = std::exchange(other.m_device, nullptr);
-        m_path = std::exchange(other.m_path, { });
+        m_path = std::move(other.m_path);
         m_shaderModule = std::exchange(other.m_shaderModule, VK_NULL_HANDLE);
     }
     return *this;
