@@ -1,0 +1,191 @@
+#version 450
+
+#define WORKGROUP_SIZE 32
+#define MAX_PATH_LENGTH 5
+#define SAMPLE_COUNT 8
+#define M_PI 3.141592653589793238462643
+
+layout(local_size_x = WORKGROUP_SIZE, local_size_y = WORKGROUP_SIZE, local_size_z = 1) in;
+
+// Code mostly taken from the path-tracing workshop at Intel:
+// https://www.intel.com/content/www/us/en/developer/videos/path-tracing-workshop-part-1.html
+
+// A triangle along with some shading parameters
+struct triangle_t {
+    // The positions of the three vertices (v_0, v_1, v_2)
+    vec3 positions[3];
+    // A vector of length 1, orthogonal to the triangle (n)
+    vec3 normal;
+    // The albedo of the triangle (i.e. the fraction of
+    // red/green/blue light that gets reflected) (a)
+    vec3 color;
+    // The radiance emitted by the triangle (for light sources) (L_e)
+    vec3 emission;
+};
+
+layout(push_constant) uniform constants
+{
+    uint iTriangleCount;
+    uint iFrame;
+    ivec2 iResolution;
+};
+
+layout(std430, binding = 0) buffer mesh
+{
+    triangle_t tris[];
+};
+
+layout(std430, binding = 1) buffer prevImage
+{
+    vec4 prevPixels[];
+};
+
+layout(std430, binding = 2) buffer curImage
+{
+    vec4 pixels[];
+};
+
+
+// Checks whether a ray intersects a triangle
+// \param out_t The ray parameter at the intersection (if any) (t)
+// \param origin The position at which the ray starts (o)
+// \param direction The direction vector of the ray (d)
+// \param tri The triangle for which to check an intersection
+// \return true if there is an intersection, false otherwise
+bool ray_triangle_intersection(out float out_t, vec3 origin, vec3 direction, triangle_t tri) {
+    vec3 v0 = tri.positions[0];
+    mat3 matrix = mat3(-direction, tri.positions[1] - v0, tri.positions[2] - v0);
+    vec3 solution = inverse(matrix) * (origin - v0);
+    out_t = solution.x;
+    vec2 barys = solution.yz;
+    return out_t >= 0.0 && barys.x >= 0.0 && barys.y >= 0.0 && barys.x + barys.y <= 1.0;
+}
+
+
+// Checks whether a ray intersects any triangle of the mesh
+// \param out_t The ray parameter at the closest intersection (if any) (t)
+// \param out_tri The closest triangle that was intersected (if any)
+// \param origin The position at which the ray starts (o)
+// \param direction The direction vector of the ray (d)
+// \return true if there is an intersection, false otherwise
+bool ray_mesh_intersection(out float out_t, out triangle_t out_tri, vec3 origin, vec3 direction) {
+    // Find the nearest intersection across all triangles
+    out_t = 1.0e38;
+    for (int i = 0; i != iTriangleCount; ++i) {
+        float t;
+        if (ray_triangle_intersection(t, origin, direction, tris[i]) && t < out_t) {
+            out_t = t;
+            out_tri = tris[i];
+        }
+    }
+    return out_t < 1.0e38;
+}
+
+mat3 setCamera(vec3 ro, vec3 ta, float cr) {
+    vec3 cw = normalize(ta - ro);                      // Forward
+    vec3 cp = vec3(sin(cr), cos(cr), 0.0);             // Roll vector
+    vec3 cu = normalize(cross(cw, cp));                // Right
+    vec3 cv = cross(cu, cw);                           // Up
+    return mat3(cu, cv, cw); // Columns: right, up, forward
+}
+
+// A pseudo-random number generator
+// \param seed Numbers that are different for each invocation. Gets updated so
+//             that it can be reused.
+// \return Two independent, uniform, pseudo-random numbers in [0,1) (u_0, u_1)
+vec2 get_random_numbers(inout uvec2 seed) {
+    // This is PCG2D: https://jcgt.org/published/0009/03/02/
+    seed = 1664525u * seed + 1013904223u;
+    seed.x += 1664525u * seed.y;
+    seed.y += 1664525u * seed.x;
+    seed ^= (seed >> 16u);
+    seed.x += 1664525u * seed.y;
+    seed.y += 1664525u * seed.x;
+    seed ^= (seed >> 16u);
+    // Convert to float. The constant here is 2^-32.
+    return vec2(seed) * 2.32830643654e-10;
+}
+
+
+// Given uniform random numbers u_0, u_1 in [0,1)^2, this function returns a
+// uniformly distributed point on the unit sphere (i.e. a random direction)
+// (omega)
+vec3 sample_sphere(vec2 random_numbers) {
+    float z = 2.0 * random_numbers[1] - 1.0;
+    float phi = 2.0 * M_PI * random_numbers[0];
+    float x = cos(phi) * sqrt(1.0 - z * z);
+    float y = sin(phi) * sqrt(1.0 - z * z);
+    return vec3(x, y, z);
+}
+
+
+// Like sample_sphere() but only samples the hemisphere where the dot product
+// with the given normal (n) is >= 0
+vec3 sample_hemisphere(vec2 random_numbers, vec3 normal) {
+    vec3 direction = sample_sphere(random_numbers);
+    if (dot(normal, direction) < 0.0)
+        direction -= 2.0 * dot(normal, direction) * normal;
+    return direction;
+}
+
+
+// Performs path tracing: It starts with the given ray. If this ray intersects
+// a triangle, a new random ray is traced iteratively, up to a fixed limit.
+// \param origin The position at which the ray starts (x_j)
+// \param direction The direction vector of the ray (omega_j)
+// \param seed Needed for get_random_numbers()
+// \return A noisy estimate of the reflected and emitted radiance at the point
+//         intersected by the ray (i.e. the color) (L_o(x))
+vec3 get_ray_radiance(vec3 origin, vec3 direction, inout uvec2 seed) {
+    vec3 radiance = vec3(0.0);
+    vec3 throughput_weight = vec3(1.0);
+    for (int i = 0; i != MAX_PATH_LENGTH; ++i) {
+        float t;
+        triangle_t tri;
+        if (ray_mesh_intersection(t, tri, origin, direction)) {
+            radiance += throughput_weight * tri.emission;
+            origin += t * direction;
+            direction = sample_hemisphere(get_random_numbers(seed), tri.normal);
+            origin += 1e-5 * direction; // nudge it a bit to fix acne
+            throughput_weight *= tri.color * 2.0 * dot(tri.normal, direction);
+        }
+        else
+            break;
+    }
+    return radiance;
+}
+
+
+void mainImage(out vec4 out_color, in vec2 pixel_coord) {
+    vec2 uv = (2.0 * pixel_coord - vec2(iResolution)) / float(iResolution.y);
+
+    vec3 camera_position = vec3(4.5, 1.5, 4.5);
+    vec3 camera_target = vec3(0.0, 0.0, 0.0);
+    mat3 invCamera = setCamera(camera_position, camera_target, 0.0);
+    float focalLength = 1.0;
+    vec3 ray_direction = invCamera * normalize(vec3(uv, focalLength));
+
+    // Use a different seed for each pixel and each frame
+    uvec2 seed = uvec2(pixel_coord) ^ uvec2(iFrame << 16);
+
+    // Perform path tracing with SAMPLE_COUNT paths
+    out_color.rgb = vec3(0.0);
+    for (int i = 0; i < SAMPLE_COUNT; ++i)
+        out_color.rgb += get_ray_radiance(camera_position, ray_direction, seed);
+    out_color.rgb /= float(SAMPLE_COUNT);
+    out_color.a = 1.0;
+}
+
+void main()
+{
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    if (x >= iResolution.x || y >= iResolution.y)
+        return;
+    vec4 outColor;
+    mainImage(outColor, vec2(float(x), float(iResolution.y - 1 - y)));
+    vec4 prevColor = prevPixels[y * iResolution.x + x];
+    float weight = 1.0 / float(iFrame + 1);
+    outColor.rgb = (1.0 - weight) * prevColor.rgb + weight * outColor.rgb;
+    pixels[y * iResolution.x + x] = vec4(outColor.rgb, 1.0);
+}

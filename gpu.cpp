@@ -497,7 +497,7 @@ void Device::create()
 
         VkCommandPoolCreateInfo commandPoolCreateInfo = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            .flags = 0,
+            .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
             .queueFamilyIndex = *queueFamilyIndex
         };
         checkedVkCall(vkCreateCommandPool, m_device, &commandPoolCreateInfo, nullptr, &m_commandPool);

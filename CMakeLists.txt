@@ -60,3 +60,4 @@ endmacro()
 
 AddDemo(NAME simple SOURCES simple.cpp SHADERS simple.comp)
 AddDemo(NAME raycast SOURCES raycast.cpp SHADERS raycast.comp)
+AddDemo(NAME pathtrace SOURCES pathtrace.cpp SHADERS pathtrace.comp)
