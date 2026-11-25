@@ -871,7 +871,7 @@ template<typename T>
 void Pipeline::pushConstants(const T &constants)
 {
     const auto prevSize = m_pushConstants.transform([](const std::span<const std::byte> &constants) { return constants.size(); }).value_or(0);
-    m_pushConstants = std::as_bytes(std::span{ &constants, 1 });
+    m_pushConstants = std::as_bytes(std::span{ std::addressof(constants), 1 });
     if (prevSize != sizeof(T))
         m_isDirty = true;
 }
