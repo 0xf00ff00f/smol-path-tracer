@@ -1,5 +1,9 @@
 import gpu;
 
+#ifdef USE_RENDERDOC
+import renderdoc;
+#endif
+
 #include <cassert>
 #include <print>
 #include <cstdio>
@@ -16,11 +20,10 @@ struct Triangle {
     Vec3 emission;
 };
 
-constexpr auto kTriangleCount = 30;
-
 std::span<const Triangle> meshTriangles()
 {
     static const auto tris = [] {
+        constexpr auto kTriangleCount = 30;
         std::array<Triangle, kTriangleCount> tris;
         // copied from https://www.intel.com/content/www/us/en/developer/videos/path-tracing-workshop-part-1.html
         tris[0].positions[0] = Vec3(0.000000133, -0.559199989, 0.548799932);
@@ -219,12 +222,28 @@ int main()
     std::println("Device: {} ({})", physDevice.name(), physDevice.type());
     gpu::Device device = physDevice.createDevice();
 
-    gpu::TypedBuffer<Triangle> meshBuffer = device.createTypedBuffer<Triangle>(kTriangleCount);
-    std::ranges::copy(meshTriangles(), meshBuffer.map().begin());
+#ifdef USE_RENDERDOC
+    renderdoc::FrameCapture capture(physDevice.name().c_str());
+#endif
+
+    const auto triangles = meshTriangles();
+    gpu::TypedBuffer<Triangle> meshBuffer = device.createTypedBuffer<Triangle>(triangles.size());
+    std::ranges::copy(triangles, meshBuffer.map().begin());
     meshBuffer.unmap();
 
     constexpr auto kWidth = 600;
     constexpr auto kHeight = 400;
+
+    struct Constants {
+        uint32_t triangleCount;
+        alignas(8) std::array<uint32_t, 2> resolution;
+    };
+
+    const Constants constants = {
+        .triangleCount = static_cast<uint32_t>(triangles.size()),
+        .resolution = { kWidth, kHeight }
+    };
+
     struct Color {
         float r, g, b, a;
     };
@@ -235,6 +254,7 @@ int main()
     gpu::Pipeline pipeline = program.createPipeline();
     pipeline.bind(0, meshBuffer);
     pipeline.bind(1, imageBuffer);
+    pipeline.pushConstants(constants);
 
     constexpr auto kWorkgroupSize = 32;
     pipeline.dispatch((kWidth + kWorkgroupSize - 1) / kWorkgroupSize, (kHeight + kWorkgroupSize - 1) / kWorkgroupSize);
