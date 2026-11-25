@@ -30,9 +30,9 @@ int main()
             float value;
         };
 
-        constexpr auto kSize = 50;
-        gpu::TypedBuffer<Float140> inBuffer = device.createTypedBuffer<Float140>(kSize, gpu::BufferUsage::Uniform);
-        gpu::TypedBuffer<float> outBuffer = device.createTypedBuffer<float>(kSize);
+        const uint32_t bufferSize = 50;
+        gpu::TypedBuffer<Float140> inBuffer = device.createTypedBuffer<Float140>(bufferSize, gpu::BufferUsage::Uniform);
+        gpu::TypedBuffer<float> outBuffer = device.createTypedBuffer<float>(bufferSize);
 
         auto data = inBuffer.map();
         std::iota(data.begin(), data.end(), 1.0f);
@@ -43,9 +43,10 @@ int main()
         gpu::Pipeline pipeline = program.createPipeline();
         pipeline.bind(0, inBuffer);
         pipeline.bind(1, outBuffer);
+        pipeline.pushConstants(bufferSize);
 
         constexpr auto kWorkgroupSize = 32;
-        pipeline.dispatch((kSize + kWorkgroupSize - 1) / kWorkgroupSize);
+        pipeline.dispatch((bufferSize + kWorkgroupSize - 1) / kWorkgroupSize);
 
         std::println("{}", outBuffer.map());
         outBuffer.unmap();

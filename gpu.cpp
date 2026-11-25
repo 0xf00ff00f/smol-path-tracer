@@ -281,6 +281,11 @@ public:
     Pipeline &operator=(Pipeline &&);
 
     void bind(uint32_t binding, const Buffer &buffer);
+
+    template<typename T>
+        requires std::is_trivially_copyable_v<T>
+    void pushConstants(const T &constants);
+
     void dispatch(uint32_t groupCountX = 1, uint32_t groupCountY = 1, uint32_t groupCountZ = 1);
 
 private:
@@ -299,6 +304,7 @@ private:
     const Device *m_device{ nullptr };
     const Program *m_program{ nullptr };
     std::vector<BufferBinding> m_bufferBindings;
+    std::optional<std::span<const std::byte>> m_pushConstants;
     VkDescriptorSetLayout m_descriptorSetLayout{ VK_NULL_HANDLE };
     VkDescriptorPool m_descriptorPool{ VK_NULL_HANDLE };
     VkDescriptorSet m_descriptorSet{ VK_NULL_HANDLE };
@@ -774,10 +780,21 @@ void Pipeline::create()
 
     // create pipeline layout
 
+    std::vector<VkPushConstantRange> pushConstantRanges;
+    if (m_pushConstants.has_value()) {
+        pushConstantRanges.push_back(VkPushConstantRange{
+                .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+                .offset = 0,
+                .size = static_cast<uint32_t>(m_pushConstants->size()),
+        });
+    }
+
     VkPipelineLayoutCreateInfo pipelineLayoutCreateInfo = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
-        .pSetLayouts = &m_descriptorSetLayout
+        .pSetLayouts = &m_descriptorSetLayout,
+        .pushConstantRangeCount = static_cast<uint32_t>(pushConstantRanges.size()),
+        .pPushConstantRanges = pushConstantRanges.data()
     };
     checkedVkCall(vkCreatePipelineLayout, *m_device, &pipelineLayoutCreateInfo, nullptr, &m_pipelineLayout);
 
@@ -849,6 +866,16 @@ Pipeline &Pipeline::operator=(Pipeline &&other)
     return *this;
 }
 
+template<typename T>
+    requires std::is_trivially_copyable_v<T>
+void Pipeline::pushConstants(const T &constants)
+{
+    const auto prevSize = m_pushConstants.transform([](const std::span<const std::byte> &constants) { return constants.size(); }).value_or(0);
+    m_pushConstants = std::as_bytes(std::span{ &constants, 1 });
+    if (prevSize != sizeof(T))
+        m_isDirty = true;
+}
+
 void Pipeline::bind(uint32_t binding, const Buffer &buffer)
 {
     const auto alreadyBound = std::ranges::any_of(m_bufferBindings, [binding, &buffer](const BufferBinding &bufferBinding) {
@@ -884,6 +911,9 @@ void Pipeline::dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t gro
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipelineLayout, 0, 1, &m_descriptorSet, 0, nullptr);
+    if (m_pushConstants.has_value()) {
+        vkCmdPushConstants(commandBuffer, m_pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, m_pushConstants->size(), m_pushConstants->data());
+    }
     vkCmdDispatch(commandBuffer, groupCountX, groupCountY, groupCountZ);
 
     checkedVkCall(vkEndCommandBuffer, commandBuffer);
