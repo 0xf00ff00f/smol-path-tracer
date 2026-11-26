@@ -1,5 +1,6 @@
 #version 450
 
+#define USE_BVH_TREE
 #define WORKGROUP_SIZE 32
 #define MAX_PATH_LENGTH 5
 #define SAMPLE_COUNT 8
@@ -23,6 +24,15 @@ struct triangle_t {
     vec3 emission;
 };
 
+struct BVHNode {
+    uint triCount;
+    int tris[8];
+    uint leftIndex;
+    uint rightIndex;
+    vec3 boxMin;
+    vec3 boxMax;
+};
+
 layout(push_constant) uniform constants
 {
     uint iTriangleCount;
@@ -35,12 +45,17 @@ layout(std430, binding = 0) buffer mesh
     triangle_t tris[];
 };
 
-layout(std430, binding = 1) buffer prevImage
+layout(std430, binding = 1) buffer bvhTree
+{
+    BVHNode treeNodes[];
+};
+
+layout(std430, binding = 2) buffer prevImage
 {
     vec4 prevPixels[];
 };
 
-layout(std430, binding = 2) buffer curImage
+layout(std430, binding = 3) buffer curImage
 {
     vec4 pixels[];
 };
@@ -61,6 +76,20 @@ bool ray_triangle_intersection(out float out_t, vec3 origin, vec3 direction, tri
     return out_t >= 0.0 && barys.x >= 0.0 && barys.y >= 0.0 && barys.x + barys.y <= 1.0;
 }
 
+bool intersectAABB(vec3 origin, vec3 direction, vec3 bMin, vec3 bMax)
+{
+    vec3 tMin = (bMin - origin) / direction;
+    vec3 tMax = (bMax - origin) / direction;
+
+    vec3 t1 = min(tMin, tMax);
+    vec3 t2 = max(tMin, tMax);
+
+    float tNear = max(max(t1.x, t1.y), t1.z);
+    float tFar = min(min(t2.x, t2.y), t2.z);
+
+    return tNear <= tFar && tFar >= 0.0;
+}
+
 
 // Checks whether a ray intersects any triangle of the mesh
 // \param out_t The ray parameter at the closest intersection (if any) (t)
@@ -71,6 +100,7 @@ bool ray_triangle_intersection(out float out_t, vec3 origin, vec3 direction, tri
 bool ray_mesh_intersection(out float out_t, out triangle_t out_tri, vec3 origin, vec3 direction) {
     // Find the nearest intersection across all triangles
     out_t = 1.0e38;
+#ifndef USE_BVH_TREE
     for (int i = 0; i != iTriangleCount; ++i) {
         float t;
         if (ray_triangle_intersection(t, origin, direction, tris[i]) && t < out_t) {
@@ -78,6 +108,36 @@ bool ray_mesh_intersection(out float out_t, out triangle_t out_tri, vec3 origin,
             out_tri = tris[i];
         }
     }
+#else
+    uint stack[20];
+    stack[0] = 0;
+
+    uint stackSize = 1;
+    while (stackSize > 0) {
+        uint nodeIndex = stack[--stackSize];
+        BVHNode node = treeNodes[nodeIndex];
+
+        if (!intersectAABB(origin, direction, node.boxMin, node.boxMax))
+            continue;
+
+        if (node.triCount > 0) {
+            // leaf node
+            for (uint i = 0; i < 8; i++) {
+                int triIndex = node.tris[i];
+                if (triIndex == -1)
+                    break;
+                float t;
+                if (ray_triangle_intersection(t, origin, direction, tris[triIndex]) && t < out_t) {
+                    out_t = t;
+                    out_tri = tris[triIndex];
+                }
+            }
+        } else {
+            stack[stackSize++] = node.leftIndex;
+            stack[stackSize++] = node.rightIndex;
+        }
+    }
+#endif
     return out_t < 1.0e38;
 }
 
