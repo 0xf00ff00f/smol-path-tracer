@@ -97,11 +97,6 @@ struct Triangle {
     }
 };
 
-struct BoundingBox {
-    Vec3 min;
-    Vec3 max;
-};
-
 struct BVHNode {
     static constexpr auto kMaxLeafTriangles = 8;
 
