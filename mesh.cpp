@@ -46,10 +46,9 @@ export std::vector<Triangle> loadMesh(const std::string &path)
         std::size_t indexOffset = 0;
         const auto faceCount = mesh.num_face_vertices.size();
         for (std::size_t faceIndex = 0; faceIndex < faceCount; ++faceIndex) {
-            tinyobj::material_t material;
             const auto materialIndex = mesh.material_ids[faceIndex];
             assert(materialIndex >= 0);
-            material = materials[materialIndex];
+            const auto& material = materials[materialIndex];
 
             auto vertexAt = [&, indexOffset](std::size_t i) -> Vec3 {
                 const tinyobj::index_t index = mesh.indices[indexOffset + i];
