@@ -205,9 +205,15 @@ vec3 get_ray_radiance(vec3 origin, vec3 direction, inout uvec2 seed) {
         if (ray_mesh_intersection(t, tri, origin, direction)) {
             radiance += throughput_weight * tri.emission;
             origin += t * direction;
+#if 0
             direction = sample_hemisphere(get_random_numbers(seed), tri.normal);
-            origin += 1e-5 * direction; // nudge it a bit to fix acne
             throughput_weight *= tri.color * 2.0 * dot(tri.normal, direction);
+#else
+            // cosine-weighted sampling
+            direction = normalize(tri.normal + sample_sphere(get_random_numbers(seed)));
+            throughput_weight *= tri.color;
+#endif
+            origin += 1e-5 * direction; // nudge it a bit to fix acne
         }
         else
             break;
