@@ -17,17 +17,14 @@ endif()
 
 add_library(gpu)
 target_sources(gpu PUBLIC FILE_SET CXX_MODULES FILES gpu.cpp)
-target_compile_options(gpu PRIVATE -freflection-latest)
 target_link_libraries(gpu PRIVATE Vulkan::Vulkan)
 
 add_library(vecmath)
 target_sources(vecmath PUBLIC FILE_SET CXX_MODULES FILES vecmath.cpp)
-target_compile_options(vecmath PRIVATE -freflection-latest)
 
 if (USE_RENDERDOC)
     add_library(renderdoc)
     target_sources(renderdoc PUBLIC FILE_SET CXX_MODULES FILES renderdoc.cpp)
-    target_compile_options(renderdoc PRIVATE -freflection-latest)
     target_include_directories(renderdoc PRIVATE ${RENDERDOC_INCLUDE_DIR})
 endif()
 
@@ -40,7 +37,6 @@ macro(AddDemo)
                         ${ARGN})
 
   add_executable(${DEMO_NAME} ${DEMO_SOURCES})
-  target_compile_options(${DEMO_NAME} PRIVATE -freflection-latest)
   target_link_libraries(${DEMO_NAME} PRIVATE gpu vecmath)
   if (USE_RENDERDOC)
       target_link_libraries(${DEMO_NAME} PRIVATE renderdoc)
