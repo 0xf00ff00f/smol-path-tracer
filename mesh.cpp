@@ -29,10 +29,10 @@ export std::vector<Triangle> loadMesh(const std::string &path)
     std::string warn, err;
     bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, path.c_str());
     if (!warn.empty()) {
-        std::println("TinyObj warn: {}", warn);
+        std::println(stderr, "TinyObj warn: {}", warn);
     }
     if (!err.empty()) {
-        std::println("TinyObj error: {}", warn);
+        std::println(stderr, "TinyObj error: {}", warn);
     }
     if (!ret) {
         return { };
