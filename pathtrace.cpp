@@ -1,5 +1,4 @@
 import gpu;
-import vecmath;
 import mesh;
 
 #ifdef USE_RENDERDOC

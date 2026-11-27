@@ -7,7 +7,7 @@ module;
 
 export module mesh;
 
-import vecmath;
+export import vecmath;
 
 export struct Triangle {
     std::array<Vec3, 3> positions;
