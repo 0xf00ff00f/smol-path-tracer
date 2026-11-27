@@ -24,7 +24,6 @@ if (USE_RENDERDOC)
     add_library(renderdoc)
     target_sources(renderdoc PUBLIC FILE_SET CXX_MODULES FILES renderdoc.cpp)
     target_compile_options(renderdoc PRIVATE -freflection-latest)
-    target_link_libraries(renderdoc PRIVATE Vulkan::Vulkan)
     target_include_directories(renderdoc PRIVATE ${RENDERDOC_INCLUDE_DIR})
 endif()
 

@@ -1,7 +1,5 @@
 module;
 
-#include <vulkan/vulkan.h>
-
 #include <array>
 #include <algorithm>
 #include <cassert>
@@ -13,6 +11,8 @@ module;
 #include <ranges>
 #include <utility>
 #include <vector>
+
+#include <vulkan/vulkan.h>
 
 export module gpu;
 
