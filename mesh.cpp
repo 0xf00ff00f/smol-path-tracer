@@ -59,15 +59,9 @@ export std::vector<Triangle> loadMesh(const std::string &path)
                 return { x, y, z };
             };
 
-            auto normal = normalize(crossProduct(vertexAt(1) - vertexAt(0), vertexAt(2) - vertexAt(0)));
+            const auto normal = normalize(crossProduct(vertexAt(1) - vertexAt(0), vertexAt(2) - vertexAt(0)));
             const auto color = Vec3(material.diffuse[0], material.diffuse[1], material.diffuse[2]);
             const auto emission = Vec3(material.emission[0], material.emission[1], material.emission[2]);
-            if (first) {
-                // flip normals for first object (the cube)
-                normal.x = -normal.x;
-                normal.y = -normal.y;
-                normal.z = -normal.z;
-            }
 
             const std::size_t vertCount = mesh.num_face_vertices[faceIndex];
             for (std::size_t i = 1; i < vertCount - 1; ++i) {
