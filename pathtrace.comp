@@ -79,7 +79,7 @@ bool rayTriangleIntersection(out float out_t, vec3 origin, vec3 direction, Trian
     return out_t >= 0.0 && barys.x >= 0.0 && barys.y >= 0.0 && barys.x + barys.y <= 1.0;
 }
 
-bool intersectAABB(vec3 origin, vec3 direction, vec3 bMin, vec3 bMax)
+bool intersectAABB(out float out_t, vec3 origin, vec3 direction, vec3 bMin, vec3 bMax)
 {
     vec3 tMin = (bMin - origin) / direction;
     vec3 tMax = (bMax - origin) / direction;
@@ -89,6 +89,8 @@ bool intersectAABB(vec3 origin, vec3 direction, vec3 bMin, vec3 bMax)
 
     float tNear = max(max(t1.x, t1.y), t1.z);
     float tFar = min(min(t2.x, t2.y), t2.z);
+
+    out_t = tNear;
 
     return tNear <= tFar && tFar >= 0.0;
 }
@@ -120,7 +122,8 @@ bool rayMeshIntersection(out float out_t, out Triangle out_tri, vec3 origin, vec
         uint nodeIndex = stack[--stackSize];
         BVHNode node = treeNodes[nodeIndex];
 
-        if (!intersectAABB(origin, direction, node.boxMin, node.boxMax))
+        float t;
+        if (!intersectAABB(t, origin, direction, node.boxMin, node.boxMax) || t > out_t)
             continue;
 
         if (node.triCount > 0) {
