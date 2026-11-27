@@ -1,4 +1,5 @@
 import gpu;
+import vecmath;
 
 #ifdef USE_RENDERDOC
 import renderdoc;
@@ -13,77 +14,6 @@ import renderdoc;
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tiny_obj_loader.h"
-
-struct alignas(16) Vec3 {
-    float x, y, z;
-
-    bool operator==(const Vec3& other) const = default;
-
-    float operator[](std::size_t i) const
-    {
-        switch (i) {
-        case 0:
-            return x;
-        case 1:
-            return y;
-        case 2:
-        default:
-            return z;
-        }
-    };
-};
-static_assert(sizeof(Vec3) == 4 * sizeof(float));
-
-Vec3 crossProduct(const Vec3& a, const Vec3& b)
-{
-  return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x };
-}
-
-Vec3 operator+(const Vec3 &a, const Vec3 &b)
-{
-    return { a.x + b.x, a.y + b.y, a.z + b.z };
-}
-
-Vec3 operator-(const Vec3& a, const Vec3& b)
-{
-    return { a.x - b.x, a.y - b.y, a.z - b.z };
-}
-
-Vec3 operator*(float s, const Vec3 &v)
-{
-    return { v.x * s, v.y * s, v.z * s };
-}
-
-Vec3 operator*(const Vec3 &v, float s)
-{
-    return s * v;
-}
-
-float dot(const Vec3& a, const Vec3& b)
-{
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-float length(const Vec3& v)
-{
-    return std::sqrt(dot(v, v));
-}
-
-Vec3 normalize(const Vec3& v)
-{
-    const auto l = length(v);
-    return { v.x / l, v.y / l, v.z / l };
-}
-
-Vec3 min(const Vec3 &a, const Vec3 &b)
-{
-    return Vec3(std::min(a.x, b.x), std::min(a.y, b.y), std::min(a.z, b.z));
-}
-
-Vec3 max(const Vec3 &a, const Vec3 &b)
-{
-    return Vec3(std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z));
-}
 
 struct Triangle {
     std::array<Vec3, 3> positions;
