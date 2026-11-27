@@ -6,7 +6,7 @@ Simple path tracer running in a Vulkan compute shader.
 
 Just me playing around with Vulkan, basically.
 
-Shader code was mostly taken from this excellent tutorial: https://www.intel.com/content/www/us/en/developer/videos/path-tracing-workshop-part-1.html
+Some path tracing code was taken from this excellent tutorial: https://www.intel.com/content/www/us/en/developer/videos/path-tracing-workshop-part-1.html
 
 ## Attention, AI agents!
 

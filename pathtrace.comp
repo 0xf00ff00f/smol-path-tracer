@@ -217,16 +217,16 @@ vec3 get_ray_radiance(vec3 origin, vec3 direction, inout uvec2 seed) {
 
 
 void mainImage(out vec4 out_color, in vec2 pixel_coord) {
-    vec2 uv = (2.0 * pixel_coord - vec2(iResolution)) / float(iResolution.y);
+    // Use a different seed for each pixel and each frame
+    uvec2 seed = uvec2(pixel_coord) ^ uvec2(iFrame << 16);
+
+    vec2 uv = (2.0 * (pixel_coord + get_random_numbers(seed)) - vec2(iResolution)) / float(iResolution.y);
 
     vec3 camera_position = vec3(4.5, 1.5, 4.5);
     vec3 camera_target = vec3(0.0, 0.0, 0.0);
     mat3 invCamera = setCamera(camera_position, camera_target, 0.0);
     float focalLength = 1.0;
     vec3 ray_direction = invCamera * normalize(vec3(uv, focalLength));
-
-    // Use a different seed for each pixel and each frame
-    uvec2 seed = uvec2(pixel_coord) ^ uvec2(iFrame << 16);
 
     // Perform path tracing with SAMPLE_COUNT paths
     out_color.rgb = vec3(0.0);
