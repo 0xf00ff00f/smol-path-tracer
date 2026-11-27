@@ -1,5 +1,7 @@
 # Simple Path Tracer
 
+![sample image](/sample.png?raw=true)
+
 ## What
 
 Simple path tracer running in a Vulkan compute shader.
