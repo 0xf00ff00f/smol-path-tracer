@@ -128,7 +128,7 @@ bool rayMeshIntersection(out float out_t, out Triangle out_tri, vec3 origin, vec
 
         if (node.triCount > 0) {
             // leaf node
-            for (uint i = 0; i < 8; i++) {
+            for (uint i = 0; i < node.tris.length(); i++) {
                 int triIndex = node.tris[i];
                 if (triIndex == -1)
                     break;
