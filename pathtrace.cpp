@@ -189,6 +189,7 @@ private:
         uint32_t triangleCount;
         uint32_t frameIndex;
         std::array<uint32_t, 2> resolution;
+        Camera camera;
     };
 
     gpu::Instance m_instance;
@@ -299,9 +300,14 @@ std::vector<Color> PathTracer::render(std::size_t passes)
 
     m_pushConstants.triangleCount = m_mesh.size();
     m_pushConstants.resolution = { static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height) };
+    m_pushConstants.camera = m_camera;
 
     std::ranges::fill(m_imageBuffer0.map(), Color{ 0.0f, 0.0f, 0.0f, 0.0f });
     m_imageBuffer0.unmap();
+
+#ifdef USE_RENDERDOC
+    renderdoc::FrameCapture capture("pathtrace");
+#endif
 
     constexpr auto kWorkgroupSize = 32;
 

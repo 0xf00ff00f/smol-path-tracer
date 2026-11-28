@@ -27,11 +27,20 @@ struct BVHNode {
     vec3 boxMax;
 };
 
+struct Camera {
+    vec3 position;
+    vec3 target;
+    float _; // padding to match C++ layout
+    float roll;
+    float focalLength;
+};
+
 layout(push_constant) uniform constants
 {
     uint iTriangleCount;
     uint iFrame;
     ivec2 iResolution;
+    Camera camera;
 };
 
 layout(std430, binding = 0) buffer mesh
@@ -226,17 +235,14 @@ vec4 mainImage(in vec2 pixelCoord) {
 
     vec2 uv = (2.0 * (pixelCoord + getRandomNumbers(seed)) - vec2(iResolution)) / float(iResolution.y);
 
-    vec3 cameraPosition = vec3(4.5, 1.5, 4.5);
-    vec3 cameraTarget = vec3(0.0, 0.0, 0.0);
-    mat3 invCamera = setCamera(cameraPosition, cameraTarget, 0.0);
-    float focalLength = 1.0;
-    vec3 rayDirection = invCamera * normalize(vec3(uv, focalLength));
+    mat3 invCamera = setCamera(camera.position, camera.target, camera.roll);
+    vec3 rayDirection = invCamera * normalize(vec3(uv, camera.focalLength));
 
     // Perform path tracing with SAMPLE_COUNT paths
     vec4 color;
     color.rgb = vec3(0.0);
     for (int i = 0; i < SAMPLE_COUNT; ++i)
-        color.rgb += getRayRadiance(cameraPosition, rayDirection, seed);
+        color.rgb += getRayRadiance(camera.position, rayDirection, seed);
     color.rgb /= float(SAMPLE_COUNT);
     color.a = 1.0;
     return color;
