@@ -11,6 +11,7 @@ import renderdoc;
 #include <cstdio>
 #include <memory>
 #include <numeric>
+#include <unistd.h>
 
 struct BVHNode {
     static constexpr auto kMaxLeafTriangles = 8;
@@ -148,97 +149,229 @@ BVHTreeBuilder::buildImpl(std::span<std::size_t> indices)
     return nodeIndex;
 }
 
-int main()
+struct Color {
+    float r, g, b, a;
+};
+
+struct Camera {
+    Vec3 position;
+    Vec3 target;
+    float roll;
+    float focalLength;
+};
+
+class PathTracer
 {
-    gpu::Instance instance;
+public:
+    PathTracer();
 
-    const std::vector<gpu::PhysDevice> physDevices = instance.physDevices();
-    if (physDevices.empty())
-        return 1;
-    const gpu::PhysDevice &physDevice = physDevices.front();
-    std::println("Device: {} ({})", physDevice.name(), physDevice.type());
-    gpu::Device device = physDevice.createDevice();
+    void setResolution(std::size_t width, std::size_t height);
+    std::size_t width() const { return m_width; }
+    std::size_t height() const { return m_height; }
 
-#ifdef USE_RENDERDOC
-    renderdoc::FrameCapture capture(physDevice.name().c_str());
-#endif
+    void setCamera(const Camera &camera);
+    Camera camera() const { return m_camera; }
 
-    const auto triangles = loadMesh("cube-monkey.obj");
+    void setMesh(std::span<const Triangle> mesh);
 
-    gpu::TypedBuffer<Triangle> meshBuffer = device.createTypedBuffer<Triangle>(triangles.size());
-    std::ranges::copy(triangles, meshBuffer.map().begin());
-    meshBuffer.unmap();
+    std::vector<Color> render(std::size_t passes);
 
-    auto bvhTree = BVHTreeBuilder{ triangles }.build();
-    std::println("{} nodes", bvhTree.size());
+    PathTracer(const PathTracer &) = delete;
+    PathTracer &operator=(const PathTracer &) = delete;
 
-    gpu::TypedBuffer<BVHNode> bvhTreeBuffer = device.createTypedBuffer<BVHNode>(bvhTree.size());
-    std::ranges::copy(bvhTree, bvhTreeBuffer.map().begin());
-    bvhTreeBuffer.unmap();
+    PathTracer(PathTracer &&) = delete;
+    PathTracer &operator=(PathTracer &&) = delete;
 
-    constexpr auto kWidth = 600;
-    constexpr auto kHeight = 400;
+private:
+    bool createResources();
 
-    struct Constants {
+    struct PushConstants {
         uint32_t triangleCount;
         uint32_t frameIndex;
         std::array<uint32_t, 2> resolution;
-    } constants = {
-        .triangleCount = static_cast<uint32_t>(triangles.size()),
-        .frameIndex = 0,
-        .resolution = { kWidth, kHeight }
     };
 
-    struct Color {
-        float r, g, b, a;
-    };
-    gpu::TypedBuffer<Color> imageBuffer0 = device.createTypedBuffer<Color>(kWidth * kHeight);
-    std::ranges::fill(imageBuffer0.map(), Color{ 0.0f, 0.0f, 0.0f, 0.0f });
-    imageBuffer0.unmap();
+    gpu::Instance m_instance;
+    gpu::Device m_device;
+    gpu::Program m_program;
+    gpu::TypedBuffer<Triangle> m_meshBuffer;
+    gpu::TypedBuffer<BVHNode> m_bvhTreeBuffer;
+    gpu::TypedBuffer<Color> m_imageBuffer0;
+    gpu::TypedBuffer<Color> m_imageBuffer1;
+    gpu::Pipeline m_pipeline0;
+    gpu::Pipeline m_pipeline1;
+    PushConstants m_pushConstants;
 
-    gpu::TypedBuffer<Color> imageBuffer1 = device.createTypedBuffer<Color>(kWidth * kHeight);
+    std::size_t m_width{ 640 };
+    std::size_t m_height{ 400 };
+    Camera m_camera;
+    std::vector<Triangle> m_mesh;
+    std::vector<BVHNode> m_bvhTree;
+    bool m_dirty{ true };
+};
 
-    gpu::Program program = device.createProgram("pathtrace.comp.spv");
+PathTracer::PathTracer()
+{
+    const std::vector<gpu::PhysDevice> physDevices = m_instance.physDevices();
+    if (physDevices.empty()) {
+        std::println(stderr, "No Vulkan devices");
+        std::abort();
+    }
+
+    const gpu::PhysDevice &physDevice = physDevices.front();
+    std::println("Device: {} ({})", physDevice.name(), physDevice.type());
+
+    m_device = physDevice.createDevice();
+
+    m_program = m_device.createProgram("pathtrace.comp.spv");
+
+    m_camera.position = Vec3(4.5, 1.5, 4.5);
+    m_camera.target = Vec3(0.0, 0.0, 0.0);
+    m_camera.roll = 0.0;
+    m_camera.focalLength = 1.0;
+}
+
+void PathTracer::setResolution(std::size_t width, std::size_t height)
+{
+    if (width == m_width && height == m_height)
+        return;
+    m_width = width;
+    m_height = height;
+    m_dirty = true;
+}
+
+void PathTracer::setMesh(std::span<const Triangle> mesh)
+{
+    m_mesh.assign(mesh.begin(), mesh.end());
+    m_bvhTree = BVHTreeBuilder{ m_mesh }.build();
+    m_dirty = true;
+}
+
+void PathTracer::setCamera(const Camera &camera)
+{
+    m_camera = camera;
+}
+
+bool PathTracer::createResources()
+{
+    if (m_mesh.empty()) {
+        std::println(stderr, "Mesh not set");
+        return false;
+    }
+
+    m_imageBuffer0 = m_device.createTypedBuffer<Color>(m_width * m_height);
+    m_imageBuffer1 = m_device.createTypedBuffer<Color>(m_width * m_height);
+
+    m_meshBuffer = m_device.createTypedBuffer<Triangle>(m_mesh.size());
+    std::ranges::copy(m_mesh, m_meshBuffer.map().begin());
+    m_meshBuffer.unmap();
+
+    m_bvhTreeBuffer = m_device.createTypedBuffer<BVHNode>(m_bvhTree.size());
+    std::ranges::copy(m_bvhTree, m_bvhTreeBuffer.map().begin());
+    m_bvhTreeBuffer.unmap();
 
     // image 0 -> 1
-    gpu::Pipeline pipeline0 = program.createPipeline();
-    pipeline0.bind(0, meshBuffer);
-    pipeline0.bind(1, bvhTreeBuffer);
-    pipeline0.bind(2, imageBuffer0);
-    pipeline0.bind(3, imageBuffer1);
-    pipeline0.pushConstants(constants);
+    m_pipeline0 = m_program.createPipeline();
+    m_pipeline0.bind(0, m_meshBuffer);
+    m_pipeline0.bind(1, m_bvhTreeBuffer);
+    m_pipeline0.bind(2, m_imageBuffer0);
+    m_pipeline0.bind(3, m_imageBuffer1);
+    m_pipeline0.pushConstants(m_pushConstants);
 
     // image 1 -> 0
-    gpu::Pipeline pipeline1 = program.createPipeline();
-    pipeline1.bind(0, meshBuffer);
-    pipeline1.bind(1, bvhTreeBuffer);
-    pipeline1.bind(2, imageBuffer1);
-    pipeline1.bind(3, imageBuffer0);
-    pipeline1.pushConstants(constants);
+    m_pipeline1 = m_program.createPipeline();
+    m_pipeline1.bind(0, m_meshBuffer);
+    m_pipeline1.bind(1, m_bvhTreeBuffer);
+    m_pipeline1.bind(2, m_imageBuffer1);
+    m_pipeline1.bind(3, m_imageBuffer0);
+    m_pipeline1.pushConstants(m_pushConstants);
+
+    return true;
+}
+
+std::vector<Color> PathTracer::render(std::size_t passes)
+{
+    if (m_dirty) {
+        if (!createResources())
+            return { };
+        m_dirty = false;
+    }
+
+    m_pushConstants.triangleCount = m_mesh.size();
+    m_pushConstants.resolution = { static_cast<uint32_t>(m_width), static_cast<uint32_t>(m_height) };
+
+    std::ranges::fill(m_imageBuffer0.map(), Color{ 0.0f, 0.0f, 0.0f, 0.0f });
+    m_imageBuffer0.unmap();
 
     constexpr auto kWorkgroupSize = 32;
-    constexpr auto kFrames = 20;
 
-    for (std::size_t i = 0; i < kFrames; ++i) {
-        std::println("rendering frame {}", i);
+    for (std::size_t i = 0; i < passes; ++i) {
+        std::println("rendering pass {}", i);
 
-        constants.frameIndex = i;
+        m_pushConstants.frameIndex = i;
 
         if ((i % 2) == 0) {
             // image 0 -> 1
-            pipeline0.dispatch((kWidth + kWorkgroupSize - 1) / kWorkgroupSize, (kHeight + kWorkgroupSize - 1) / kWorkgroupSize);
+            m_pipeline0.dispatch((m_width + kWorkgroupSize - 1) / kWorkgroupSize, (m_height + kWorkgroupSize - 1) / kWorkgroupSize);
         } else {
-            // image 1 -> 2
-            pipeline1.dispatch((kWidth + kWorkgroupSize - 1) / kWorkgroupSize, (kHeight + kWorkgroupSize - 1) / kWorkgroupSize);
+            // image 1 -> 0
+            m_pipeline1.dispatch((m_width + kWorkgroupSize - 1) / kWorkgroupSize, (m_height + kWorkgroupSize - 1) / kWorkgroupSize);
         }
     }
 
-    const auto& finalBuffer = ((kFrames % 2) == 1) ? imageBuffer1 : imageBuffer0;
+    const auto &finalBuffer = ((passes % 2) == 1) ? m_imageBuffer1 : m_imageBuffer0;
     const auto pixels = finalBuffer.map();
+    std::vector<Color> image{ pixels.begin(), pixels.end() };
+    finalBuffer.unmap();
+    return image;
+}
 
-    std::unique_ptr<FILE, int (*)(FILE *)> file{ fopen("output.ppm", "wb"), &fclose };
+int main(int argc, char *argv[])
+{
+    std::size_t passes = 20;
+    std::size_t width = 640;
+    std::size_t height = 400;
+    std::string outfile{ "output.ppm" };
+
+    const auto usage = [argv] { std::println(stderr, "Usage: {} [-w width] [-h height] [-p passes] [-o outfile] mesh", argv[0]); };
+
+    int opt;
+    while ((opt = getopt(argc, argv, "w:h:p:o:")) != -1) {
+        switch (opt) {
+        case 'w':
+            width = std::stoi(optarg);
+            break;
+        case 'h':
+            height = std::stoi(optarg);
+            break;
+        case 'p':
+            passes = std::stoi(optarg);
+            break;
+        case 'o':
+            outfile = optarg;
+            break;
+        default:
+            usage();
+            return 1;
+        }
+    }
+
+    if (optind >= argc) {
+        usage();
+        return 1;
+    }
+
+    const auto mesh = argv[optind];
+
+    PathTracer pathTracer;
+    pathTracer.setMesh(loadMesh(mesh));
+    pathTracer.setResolution(width, height);
+
+    const auto pixels = pathTracer.render(passes);
+
+    std::unique_ptr<FILE, int (*)(FILE *)> file{ fopen(outfile.c_str(), "wb"), &fclose };
     std::println(file.get(), "P6");
-    std::println(file.get(), "{} {}", kWidth, kHeight);
+    std::println(file.get(), "{} {}", pathTracer.width(), pathTracer.height());
     std::println(file.get(), "255");
     for (const auto pixel : pixels) {
         constexpr auto kGamma = 1.0f / 2.2f;

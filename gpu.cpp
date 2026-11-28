@@ -165,6 +165,8 @@ public:
 
     operator VkDevice() const { return m_device; }
 
+    explicit operator bool() const { return m_device != VK_NULL_HANDLE; }
+
 private:
     explicit Device(PhysDevice physDevice);
     void create();
@@ -199,6 +201,8 @@ public:
 
     operator VkBuffer() const { return m_buffer; }
 
+    explicit operator bool() const { return m_buffer != VK_NULL_HANDLE; }
+
 protected:
     explicit Buffer(const Device *device, VkDeviceSize size, BufferUsage usage);
 
@@ -219,6 +223,8 @@ template<typename T>
 class TypedBuffer : public Buffer
 {
 public:
+    TypedBuffer() = default;
+
     std::span<T> map() const
     {
         const auto bytes = mapBytes();
@@ -256,6 +262,8 @@ public:
 
     operator VkShaderModule() const { return m_shaderModule; }
 
+    explicit operator bool() const { return m_shaderModule != VK_NULL_HANDLE; }
+
 private:
     explicit Program(const Device *device, std::string_view path);
     void create();
@@ -271,7 +279,6 @@ class Pipeline
 {
 public:
     Pipeline() = default;
-
     ~Pipeline();
 
     Pipeline(const Pipeline &) = delete;
