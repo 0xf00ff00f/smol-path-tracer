@@ -35,7 +35,7 @@ struct Camera {
     float focalLength;
 };
 
-layout(push_constant) uniform constants
+layout(push_constant) uniform PushConstants
 {
     uint iTriangleCount;
     uint iFrame;
@@ -43,25 +43,25 @@ layout(push_constant) uniform constants
     Camera camera;
 };
 
-layout(std430, binding = 0) buffer mesh
+layout(std430, binding = 0) buffer MeshBuffer
 {
     Triangle tris[];
 };
 
-layout(std430, binding = 1) buffer bvhTree
+layout(std430, binding = 1) buffer BVHTreeBuffer
 {
     BVHNode treeNodes[];
 };
 
-layout(std430, binding = 2) buffer prevImage
-{
-    vec4 prevPixels[];
-};
-
-layout(std430, binding = 3) buffer curImage
+layout(std430, binding = 2) buffer PrevImageBuffer
 {
     vec4 pixels[];
-};
+} prevImage;
+
+layout(std430, binding = 3) buffer CurImageBuffer
+{
+    vec4 pixels[];
+} curImage;
 
 // used in thousands of ShaderToy shaders
 mat3 setCamera(vec3 ro, vec3 ta, float cr) {
@@ -255,8 +255,8 @@ void main()
     if (x >= iResolution.x || y >= iResolution.y)
         return;
     vec4 color = mainImage(vec2(float(x), float(iResolution.y - 1 - y)));
-    vec4 prevColor = prevPixels[y * iResolution.x + x];
+    vec4 prevColor = prevImage.pixels[y * iResolution.x + x];
     float weight = 1.0 / float(iFrame + 1);
     color.rgb = mix(prevColor.rgb, color.rgb, weight);
-    pixels[y * iResolution.x + x] = vec4(color.rgb, 1.0);
+    curImage.pixels[y * iResolution.x + x] = vec4(color.rgb, 1.0);
 }
