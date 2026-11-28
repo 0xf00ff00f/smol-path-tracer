@@ -50,7 +50,7 @@ export std::vector<Triangle> loadMesh(const std::string &path)
             assert(materialIndex >= 0);
             const auto& material = materials[materialIndex];
 
-            auto vertexAt = [&, indexOffset](std::size_t i) -> Vec3 {
+            auto vertexAt = [&](std::size_t i) -> Vec3 {
                 const tinyobj::index_t index = mesh.indices[indexOffset + i];
                 const auto x = attrib.vertices[3 * static_cast<std::size_t>(index.vertex_index) + 0];
                 const auto y = attrib.vertices[3 * static_cast<std::size_t>(index.vertex_index) + 1];
